@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gudang Sparepart</title>
+<meta name="description" content="Inventaris sparepart gudang: stok, pengambilan, dan kartu stok.">
+<meta name="theme-color" content="#b45309" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131110" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Gudang Sparepart">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ============ LAYAR LOGIN ============ -->
+<div id="view-login" class="login-wrap hidden">
+  <div class="login-card">
+    <div class="login-logo">📦</div>
+    <h1>Gudang Sparepart</h1>
+    <p class="muted">Inventaris sparepart gudang</p>
+
+    <div id="setup-box" class="hidden">
+      <p><b>Pengaturan pertama kali</b><br>Buat password Admin untuk username <b>zico</b>.</p>
+      <label>Password Admin
+        <input id="setup-password" type="password" placeholder="Minimal 4 karakter" autocomplete="new-password">
+      </label>
+      <label>Ulangi password
+        <input id="setup-confirm" type="password" placeholder="Ulangi password" autocomplete="new-password">
+      </label>
+      <button id="btn-setup" class="btn btn-primary btn-block">Buat Akun Admin</button>
+    </div>
+
+    <div id="login-box" class="hidden">
+      <label>Username
+        <input id="login-username" type="text" placeholder="contoh: zico" autocomplete="username">
+      </label>
+      <label>Password
+        <input id="login-password" type="password" placeholder="Password" autocomplete="current-password">
+      </label>
+      <button id="btn-login" class="btn btn-primary btn-block">Masuk</button>
+      <p class="muted small">Akun User dibuat oleh Admin dari menu Akun.</p>
+    </div>
+    <p id="login-error" class="error hidden"></p>
+  </div>
+</div>
+
+<!-- ============ APLIKASI ============ -->
+<div id="app" class="hidden">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">📦 <span>Gudang Sparepart</span></div>
+      <nav class="topnav" id="topnav">
+        <button data-view="dashboard" class="active">▦ Dashboard</button>
+        <button data-view="inventory">🗂 Inventaris</button>
+        <button data-view="take">📤 Ambil</button>
+        <button data-view="history">🕘 Riwayat</button>
+        <button data-view="account">👤 Akun</button>
+      </nav>
+      <div class="role-chip" id="role-chip">—</div>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- DASHBOARD -->
+    <section id="view-dashboard" class="view">
+      <div class="stat-grid">
+        <div class="stat"><b id="st-items">0</b><span>Jenis barang</span></div>
+        <div class="stat"><b id="st-units">0</b><span>Total unit</span></div>
+        <div class="stat"><b id="st-low">0</b><span>Stok menipis</span></div>
+        <div class="stat"><b id="st-out">0</b><span>Stok habis</span></div>
+      </div>
+      <p class="muted small">🗄 <span id="st-racks">0</span> rak terpakai &nbsp;•&nbsp; 📦 <span id="st-boxes">0</span> jolly box terpakai</p>
+
+      <div class="date-row">
+        <label for="dash-date">Tanggal</label>
+        <input type="date" id="dash-date">
+      </div>
+
+      <div class="menu-grid">
+        <button class="menu-card" data-goto="inventory">
+          <span class="menu-ico">🗂</span><b>Stok Sparepart All</b><small>Lihat semua barang</small>
+        </button>
+        <button class="menu-card" data-goto="add" id="menu-add">
+          <span class="menu-ico">➕</span><b>Tambah Sparepart</b><small>Barang baru / impor Excel</small>
+        </button>
+        <button class="menu-card" data-goto="take">
+          <span class="menu-ico">📤</span><b>Pemakaian</b><small>Ambil sparepart</small>
+        </button>
+        <button class="menu-card" data-goto="photo-search">
+          <span class="menu-ico">🔍</span><b>Cari pakai Foto</b><small>Tidak tahu nama? Foto barangnya</small>
+        </button>
+      </div>
+
+      <h2>Sparepart keluar — <span id="out-date-label"></span></h2>
+      <p class="muted">Total keluar hari itu: <b id="out-total">0</b> unit</p>
+      <p><button class="btn btn-small" id="btn-export-out">⬇ Ekspor Excel history hari ini</button></p>
+      <div id="out-list" class="list"></div>
+    </section>
+
+    <!-- INVENTARIS -->
+    <section id="view-inventory" class="view hidden">
+      <h2>Inventaris</h2>
+      <div class="toolbar">
+        <input id="inv-search" type="search" placeholder="Cari nama / barcode / kode FD / rak / box…">
+        <button class="btn btn-primary" id="btn-scan-inv">📷 Scan</button>
+        <select id="inv-filter">
+          <option value="all">Semua stok</option>
+          <option value="low">Stok menipis</option>
+          <option value="out">Stok habis</option>
+        </select>
+      </div>
+      <div class="toolbar">
+        <button class="btn" id="btn-open-import">📥 Impor Excel</button>
+        <button class="btn" id="btn-add-from-inv">➕ Tambah Sparepart</button>
+        <button class="btn" id="btn-print-qr">🖨 Cetak QR</button>
+        <button class="btn" id="btn-photo-search-inv">🔍 Cari pakai Foto</button>
+        <span class="muted small" id="inv-count"></span>
+      </div>
+
+      <div id="import-panel" class="card hidden">
+        <h3>Impor massal dari Excel</h3>
+        <p class="muted small">File .xlsx / .csv. Kolom dikenali otomatis dari nama header (Material description → nama, Material → Kode FD, Qty Stok Opname → stok, Location → rak, No.Rak → shaf, No.Jolly Box → jolly box, Mesin → kategori).</p>
+        <input type="file" id="import-file" accept=".xlsx,.xls,.csv">
+        <div id="import-sheets" class="hidden">
+          <label>Pilih sheet
+            <select id="import-sheet"></select>
+          </label>
+          <button class="btn" id="btn-import-preview">Lihat Preview</button>
+        </div>
+        <div id="import-preview" class="hidden"></div>
+        <div id="import-progress" class="hidden">
+          <div class="progress"><div id="import-bar" style="width:0%"></div></div>
+          <p class="muted small" id="import-status"></p>
+        </div>
+        <div id="import-report" class="hidden"></div>
+        <p><a href="/api/template" class="btn btn-small">⬇ Unduh template kosong</a>
+        <button class="btn btn-small" id="btn-import-cancel">Tutup</button></p>
+      </div>
+
+      <div id="inv-list" class="list"></div>
+      <p class="muted small">📊 MOI = stok / rata-rata pakai per bulan (berapa bulan stok akan habis); YOI = stok / rata-rata pakai per tahun. Rata-rata dihitung dari history pengambilan tiap barang.</p>
+      <div class="pager">
+        <button class="btn" id="inv-prev">‹ Sebelumnya</button>
+        <span id="inv-page-info" class="muted"></span>
+        <button class="btn" id="inv-next">Berikutnya ›</button>
+      </div>
+    </section>
+
+    <!-- CARI PAKAI FOTO -->
+    <section id="view-photo-search" class="view hidden">
+      <h2>🔍 Cari pakai Foto</h2>
+      <p class="muted">Tidak tahu nama sparepart-nya? Foto barangnya — aplikasi akan menampilkan barang yang paling mirip.</p>
+      <p class="muted small" id="photo-search-note"></p>
+      <div class="card">
+        <div class="photo-box">
+          <img id="query-photo-preview" class="hidden" alt="Foto yang dicari">
+          <div class="photo-actions">
+            <label class="btn">📷 Foto barang <input type="file" id="query-photo-camera" accept="image/*" capture="environment" class="hidden"></label>
+            <label class="btn">🖼 Dari galeri <input type="file" id="query-photo-gallery" accept="image/*" class="hidden"></label>
+          </div>
+          <p class="muted small">Foto dikecilkan otomatis sebelum dikirim.</p>
+          <p id="query-photo-error" class="error hidden"></p>
+        </div>
+        <button class="btn btn-primary btn-block" id="btn-run-photo-search" disabled>🔍 Cari barang yang mirip</button>
+      </div>
+      <div id="photo-results"></div>
+      <p><button class="btn" id="btn-back-photo-search">‹ Kembali ke Dashboard</button></p>
+    </section>
+
+    <!-- TAMBAH -->
+    <section id="view-add" class="view hidden">
+      <h2 id="add-title">Tambah Sparepart</h2>
+      <form id="form-add" class="card form">
+        <div class="photo-box">
+          <img id="add-photo-preview" class="hidden" alt="Foto sparepart">
+          <div class="photo-actions">
+            <label class="btn">📷 Ambil foto <input type="file" id="add-photo-camera" accept="image/*" capture="environment" class="hidden"></label>
+            <label class="btn">🖼 Dari galeri <input type="file" id="add-photo-gallery" accept="image/*" class="hidden"></label>
+            <button type="button" class="btn hidden" id="btn-photo-remove">Hapus foto</button>
+          </div>
+          <p class="muted small">Foto dikecilkan otomatis (maks 1024px, ~500 KB).</p>
+          <p id="photo-error" class="error hidden"></p>
+        </div>
+        <input type="hidden" id="add-id">
+        <label>Nama sparepart *
+          <input id="add-name" required placeholder="NAMA SPAREPART" autocomplete="off">
+        </label>
+        <label>Kode FD
+          <input id="add-fd" placeholder="FD014761" autocomplete="off">
+        </label>
+        <label>Barcode
+          <span class="input-row">
+            <input id="add-barcode" placeholder="Scan / ketik barcode" autocomplete="off">
+            <button type="button" class="btn btn-primary" id="btn-scan-add">📷 Scan</button>
+          </span>
+        </label>
+        <div class="grid2">
+          <label>Stok awal *
+            <input id="add-stock" type="number" min="0" value="0" required>
+          </label>
+          <label>Satuan
+            <input id="add-unit" value="PCS" autocomplete="off">
+          </label>
+        </div>
+        <div class="grid2">
+          <label>No rak
+            <input id="add-rack" placeholder="RAK 2" autocomplete="off">
+          </label>
+          <label>Shaf
+            <input id="add-shelf" placeholder="F.1" autocomplete="off">
+          </label>
+        </div>
+        <div class="grid2">
+          <label>No jolly box
+            <input id="add-box" placeholder="18" autocomplete="off">
+          </label>
+          <label>Kategori / Mesin
+            <input id="add-category" placeholder="BLOWMOULD" autocomplete="off">
+          </label>
+        </div>
+        <label>Catatan
+          <input id="add-notes" placeholder="Kode Fusion / keterangan lain" autocomplete="off">
+        </label>
+        <div class="form-footer">
+          <button type="submit" class="btn btn-primary btn-block" id="btn-save-item">💾 Simpan sparepart</button>
+          <button type="button" class="btn btn-block" id="btn-cancel-add">Batal</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- AMBIL -->
+    <section id="view-take" class="view hidden">
+      <h2>Pengambilan Sparepart</h2>
+      <div class="card form">
+        <label>Kode FD / Barcode
+          <span class="input-row">
+            <input id="take-code" placeholder="Ketik kode FD / barcode lalu Enter" autocomplete="off">
+            <button type="button" class="btn btn-primary" id="btn-scan-take">📷 Scan</button>
+          </span>
+        </label>
+        <div id="take-item" class="hidden"></div>
+        <div id="take-fields" class="hidden">
+          <div class="grid2">
+            <label>Jumlah *
+              <input id="take-qty" type="number" min="1" value="1" required>
+            </label>
+            <label>Mesin
+              <input id="take-machine" placeholder="BLOWMOULD" autocomplete="off">
+            </label>
+          </div>
+          <label>Nama pemakai *
+            <input id="take-by" placeholder="Nama orang yang memakai" autocomplete="off">
+          </label>
+          <button class="btn btn-primary btn-block" id="btn-save-take">💾 Simpan pengambilan</button>
+        </div>
+        <p id="take-error" class="error hidden"></p>
+      </div>
+      <h3>Pengambilan terakhir</h3>
+      <div id="take-recent" class="list"></div>
+    </section>
+
+    <!-- RIWAYAT -->
+    <section id="view-history" class="view hidden">
+      <h2>Riwayat</h2>
+      <div class="date-row">
+        <label for="hist-date">Tanggal (kosongkan untuk 60 terakhir)</label>
+        <input type="date" id="hist-date">
+        <button class="btn" id="btn-hist-clear">Tampilkan 60 terakhir</button>
+        <button class="btn" id="btn-export-history">⬇ Ekspor Excel</button>
+      </div>
+      <div id="hist-content"></div>
+    </section>
+
+    <!-- DETAIL BARANG -->
+    <section id="view-detail" class="view hidden">
+      <button class="btn" id="btn-back-detail">‹ Kembali</button>
+      <div id="detail-content"></div>
+    </section>
+
+    <!-- AKUN -->
+    <section id="view-account" class="view hidden">
+      <h2>Akun &amp; Peran</h2>
+      <div class="card">
+        <p>Login sebagai <b id="acc-name">—</b> — peran: <b id="acc-role">—</b></p>
+        <p class="muted small" id="acc-desc"></p>
+        <p>
+          <button class="btn" id="btn-change-pw">🔑 Ganti password saya</button>
+          <button class="btn" id="btn-logout">🚪 Logout</button>
+        </p>
+        <div id="pw-box" class="hidden">
+          <label>Password lama <input type="password" id="pw-old" autocomplete="current-password"></label>
+          <label>Password baru <input type="password" id="pw-new" autocomplete="new-password"></label>
+          <button class="btn btn-primary" id="btn-pw-save">Simpan password baru</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>📱 Aplikasi di HP</h3>
+        <p class="muted small">Pasang aplikasi ini di layar utama HP supaya terbuka fullscreen seperti aplikasi biasa.</p>
+        <button class="btn btn-primary" id="btn-install">⬇ Pasang sebagai aplikasi</button>
+        <div id="install-guide" class="hidden">
+          <p><b>Android (Chrome):</b> ketuk titik tiga (⋮) di kanan atas → "Tambahkan ke Layar utama" → Tambahkan.</p>
+          <p><b>iPhone (Safari):</b> ketuk tombol Bagikan → "Tambah ke Layar Utama".</p>
+        </div>
+      </div>
+
+      <div class="card hidden" id="admin-users-card">
+        <h3>Akun User</h3>
+        <p class="muted small">Buat akun untuk teman/tim yang memakai aplikasi ini. Mereka login dengan akun User — hanya bisa melihat stok, mencari, dan mencatat pengambilan.</p>
+        <div class="grid2">
+          <label>Username baru <input id="new-user-name" placeholder="contoh: budi" autocomplete="off"></label>
+          <label>Password <input id="new-user-pw" type="password" placeholder="Minimal 4 karakter" autocomplete="new-password"></label>
+        </div>
+        <button class="btn btn-primary" id="btn-create-user">➕ Buat akun User</button>
+        <div id="user-list" class="list"></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- scanner -->
+<div id="scanner" class="scanner hidden">
+  <div class="scanner-view" id="scanner-view">
+    <video id="scanner-video" playsinline></video>
+    <div class="scan-frame" aria-hidden="true"></div>
+  </div>
+  <p id="scanner-status">Arahkan kamera ke barcode / QR code</p>
+  <div id="scanner-error" class="scanner-error hidden">
+    <h3 id="scanner-error-title">Kamera tidak bisa dibuka</h3>
+    <p id="scanner-error-msg"></p>
+    <ul>
+      <li>Izinkan akses kamera saat browser meminta (ikon gembok di address bar → Kamera → Izinkan), lalu coba scan lagi.</li>
+      <li>Pakai Chrome terbaru dan pastikan halaman dibuka lewat HTTPS atau localhost.</li>
+      <li>Kalau tetap tidak bisa, tutup scanner ini lalu ketik kodenya manual.</li>
+    </ul>
+    <button class="btn btn-primary btn-block" id="btn-scan-manual">⌨ Ketik kode manual</button>
+  </div>
+  <button class="btn btn-primary" id="btn-scan-close">Tutup scanner</button>
+</div>
+
+<div id="print-area" class="hidden"></div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/vendor/zxing-browser.min.js" defer></script>
+<script src="/app.js"></script>
+</body>
+</html>

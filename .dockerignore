@@ -1,0 +1,9 @@
+node_modules
+data
+*.log
+cloudflared
+pinggy.log
+tunnel.log
+tunnel2.log
+server.log
+.git

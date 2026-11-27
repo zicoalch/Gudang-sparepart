@@ -1,0 +1,24 @@
+# Render Blueprint — deploy Gudang Sparepart dari repo GitHub
+# Cara pakai: push folder ini ke repo GitHub, lalu di dashboard.render.com
+# "New +" -> "Blueprint" -> pilih repo. Render membaca file ini otomatis.
+# PENTING: plan free TIDAK punya persistent disk — file SQLite di /app/data
+# akan HILANG tiap deploy/restart. Supaya data awet, naikkan ke plan
+# berbayar (starter) dan tambahkan disk di bawah (uncomment blok disk),
+# atau pakai Railway/Fly.io yang volume-nya tersedia di paket gratis/credit.
+services:
+  - type: web
+    name: gudang-sparepart
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: DB_PATH
+        value: /app/data/gudang.db
+    healthCheckPath: /
+    # Untuk data persisten (butuh plan berbayar), uncomment blok ini:
+    # disk:
+    #   name: gudang-data
+    #   mountPath: /app/data
+    #   sizeGB: 1
