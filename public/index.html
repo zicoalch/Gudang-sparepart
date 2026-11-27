@@ -59,6 +59,7 @@
         <button data-view="dashboard" class="active">▦ Dashboard</button>
         <button data-view="inventory">🗂 Inventaris</button>
         <button data-view="take">📤 Ambil</button>
+        <button data-view="so">📋 SO</button>
         <button data-view="history">🕘 Riwayat</button>
         <button data-view="account">👤 Akun</button>
       </nav>
@@ -264,6 +265,36 @@
       </div>
       <h3>Pengambilan terakhir</h3>
       <div id="take-recent" class="list"></div>
+    </section>
+
+    <!-- STOCK OPNAME -->
+    <section id="view-so" class="view hidden">
+      <h2>📋 Stock Opname (SO)</h2>
+      <p class="muted">Hitung stok fisik di rak, lalu catat jumlahnya di sini. Aplikasi membandingkan jumlah hitunganmu dengan stok di sistem.</p>
+      <div class="date-row">
+        <label for="so-date">Tanggal</label>
+        <input type="date" id="so-date">
+        <button class="btn" id="btn-export-so">⬇ Ekspor Excel</button>
+      </div>
+      <div class="card form">
+        <label>Kode FD / Barcode
+          <span class="input-row">
+            <input id="so-code" placeholder="Ketik kode FD / barcode lalu Enter" autocomplete="off">
+            <button type="button" class="btn" id="btn-lookup-so">🔍 Cari</button>
+            <button type="button" class="btn btn-primary" id="btn-scan-so">📷 Scan</button>
+          </span>
+        </label>
+        <div id="so-item" class="hidden"></div>
+        <div id="so-fields" class="hidden">
+          <label>Jumlah SO (hasil hitung fisik) *
+            <input id="so-counted" type="number" min="0" step="1" value="0" required>
+          </label>
+          <button class="btn btn-primary btn-block" id="btn-save-so">💾 Simpan SO</button>
+        </div>
+        <p id="so-error" class="error hidden"></p>
+      </div>
+      <h3>Catatan SO — <span id="so-date-label"></span></h3>
+      <div id="so-list" class="list"></div>
     </section>
 
     <!-- RIWAYAT -->

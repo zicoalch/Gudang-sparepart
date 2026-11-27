@@ -7,6 +7,7 @@ let currentView = 'dashboard';
 let invPage = 1, invSearch = '', invFilter = 'all';
 let importJobId = null, importSheet = null;
 let takeItem = null;
+let soItem = null;
 let detailId = null, detailBack = 'dashboard';
 let deferredPrompt = null;
 
@@ -74,6 +75,7 @@ function showView(name) {
   if (name === 'dashboard') loadDashboard();
   if (name === 'inventory') loadInventory();
   if (name === 'take') loadTakeRecent();
+  if (name === 'so') loadSo();
   if (name === 'history') loadHistory();
   if (name === 'account') loadAccount();
   if (name === 'photo-search') loadPhotoSearchNote();
@@ -140,6 +142,7 @@ function enterApp(me) {
   $('#btn-add-from-inv').style.display = IS_ADMIN ? '' : 'none';
   $('#btn-open-import').style.display = IS_ADMIN ? '' : 'none';
   $('#dash-date').value = localDate();
+  $('#so-date').value = localDate();
   showView('dashboard');
 }
 $('#btn-logout').addEventListener('click', async () => {
@@ -637,6 +640,90 @@ async function loadTakeRecent() {
   } catch (e) { /* diam */ }
 }
 
+// ---------- stock opname (SO) ----------
+async function lookupSo() {
+  const code = $('#so-code').value.trim();
+  const errEl = $('#so-error');
+  errEl.classList.add('hidden');
+  $('#so-item').classList.add('hidden');
+  $('#so-fields').classList.add('hidden');
+  soItem = null;
+  if (!code) return;
+  try {
+    const r = await api('/api/items/lookup?code=' + encodeURIComponent(code));
+    soItem = r.item;
+    $('#so-item').innerHTML = '<div class="row"><span class="r-stock">' + fmt(r.item.stock) + ' <small>' + esc(r.item.unit) + '</small></span>'
+      + '<span class="r-name">' + esc(r.item.name) + '</span>'
+      + '<div class="r-sub">' + esc(r.item.fd_code || '') + ' • Rak ' + esc(r.item.rack || '-') + ' • Shaf ' + esc(r.item.shelf || '-') + ' • Box ' + esc(r.item.jolly_box || '-') + ' • Stok sistem: ' + fmt(r.item.stock) + '</div></div>';
+    $('#so-item').classList.remove('hidden');
+    $('#so-fields').classList.remove('hidden');
+    $('#so-counted').focus();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+  }
+}
+$('#so-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); lookupSo(); } });
+$('#so-code').addEventListener('change', lookupSo);
+$('#btn-lookup-so').addEventListener('click', lookupSo);
+$('#btn-scan-so').addEventListener('click', () => openScanner('so'));
+$('#btn-save-so').addEventListener('click', async () => {
+  if (!soItem) { toast('Pilih barang dulu (ketik Kode FD / barcode).'); return; }
+  const btn = $('#btn-save-so');
+  btn.disabled = true;
+  try {
+    const r = await apiJSON('/api/so', { itemId: soItem.id, counted: $('#so-counted').value });
+    if (r.record.status === 'Sesuai') toast('SO tersimpan — jumlah sesuai dengan stok sistem.');
+    else toast('SO tersimpan — selisih ' + (r.record.diff > 0 ? '+' : '') + fmt(r.record.diff) + ' dari stok sistem.');
+    $('#so-code').value = ''; $('#so-counted').value = '0';
+    $('#so-item').classList.add('hidden'); $('#so-fields').classList.add('hidden');
+    soItem = null;
+    loadSo();
+  } catch (e) { toast(e.message); }
+  btn.disabled = false;
+});
+$('#so-date').addEventListener('change', loadSo);
+$('#btn-export-so').addEventListener('click', () => {
+  const date = $('#so-date').value || localDate();
+  const a = document.createElement('a');
+  a.href = '/api/so/export?date=' + encodeURIComponent(date);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+});
+async function loadSo() {
+  const date = $('#so-date').value || localDate();
+  $('#so-date-label').textContent = fmtDateID(date);
+  const box = $('#so-list');
+  box.innerHTML = '<p class="muted">Memuat…</p>';
+  try {
+    const r = await api('/api/so?date=' + date);
+    if (!r.records.length) { box.innerHTML = '<p class="muted">Belum ada catatan SO pada tanggal ini.</p>'; return; }
+    box.innerHTML = r.records.map((rec) => {
+      const diffTxt = (rec.diff > 0 ? '+' : '') + fmt(rec.diff);
+      const badge = rec.status === 'Sesuai'
+        ? '<span class="badge green">✅ Sesuai</span>'
+        : '<span class="badge red">⚠️ Selisih</span>';
+      const adjustBtn = (rec.diff !== 0 && !rec.adjusted && IS_ADMIN)
+        ? ' <button class="btn btn-small" data-adjust="' + rec.id + '" data-name="' + esc(rec.item_name) + '" data-counted="' + rec.counted + '">Sesuaikan stok</button>' : '';
+      const adjustedTag = rec.adjusted ? ' <span class="muted small">• Sudah disesuaikan</span>' : '';
+      return '<div class="row"><span class="r-stock">' + fmt(rec.counted) + '</span>'
+        + '<span class="r-name">' + esc(rec.item_name) + ' ' + badge + '</span>'
+        + '<div class="r-sub">' + esc(rec.fd_code || '') + ' • Sistem ' + fmt(rec.system_stock) + ' • SO ' + fmt(rec.counted) + ' • Selisih ' + diffTxt + adjustedTag + '<br>'
+        + esc(rec.username || '-') + ' • ' + timeOf(rec.created_at) + ' WIB' + adjustBtn + '</div></div>';
+    }).join('');
+    box.querySelectorAll('[data-adjust]').forEach((b) => b.addEventListener('click', async () => {
+      const name = b.dataset.name, counted = b.dataset.counted;
+      if (!confirm('Sesuaikan stok "' + name + '" menjadi ' + counted + ' sesuai hasil SO?')) return;
+      try {
+        const res = await apiJSON('/api/so/' + b.dataset.adjust + '/adjust', {});
+        toast('Stok "' + name + '" disesuaikan menjadi ' + fmt(res.balance) + '.');
+        loadSo();
+      } catch (e) { toast(e.message); }
+    }));
+  } catch (e) { box.innerHTML = '<p class="error">' + esc(e.message) + '</p>'; }
+}
+
 // ---------- riwayat ----------
 $('#btn-hist-clear').addEventListener('click', () => { $('#hist-date').value = ''; loadHistory(); });
 $('#btn-export-history').addEventListener('click', () => {
@@ -880,6 +967,7 @@ function closeScanner() {
 }
 async function applyScan(code) {
   if (scanTarget === 'take') { $('#take-code').value = code; showView('take'); lookupTake(); }
+  else if (scanTarget === 'so') { $('#so-code').value = code; showView('so'); lookupSo(); }
   else if (scanTarget === 'add') { $('#add-barcode').value = code; }
   else if (scanTarget === 'inv') {
     try {
@@ -899,6 +987,7 @@ $('#btn-scan-close').addEventListener('click', closeScanner);
 $('#btn-scan-manual').addEventListener('click', () => {
   closeScanner();
   if (scanTarget === 'take') { showView('take'); $('#take-code').focus(); }
+  else if (scanTarget === 'so') { showView('so'); $('#so-code').focus(); }
   else if (scanTarget === 'add') { $('#add-barcode').focus(); }
   else { showView('inventory'); $('#inv-search').focus(); }
 });

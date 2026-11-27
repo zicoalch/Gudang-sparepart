@@ -66,6 +66,19 @@ CREATE TABLE IF NOT EXISTS moves (
 );
 CREATE INDEX IF NOT EXISTS idx_moves_item ON moves(item_id, date, id);
 CREATE INDEX IF NOT EXISTS idx_moves_date ON moves(date, id);
+CREATE TABLE IF NOT EXISTS so_records (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  date TEXT NOT NULL,
+  counted INTEGER NOT NULL,
+  system_stock INTEGER NOT NULL,
+  diff INTEGER NOT NULL,
+  username TEXT DEFAULT '',
+  adjusted INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_so_date ON so_records(date, id);
+CREATE INDEX IF NOT EXISTS idx_so_item ON so_records(item_id, date);
 `);
 
 // migrasi: kolom sidik foto (perceptual hash + histogram warna) untuk "Cari pakai Foto"
@@ -254,7 +267,7 @@ app.get('/api/stats', requireAuth, (req, res) => {
 // Koreksi opname impor Excel bukan pemakaian, jadi tidak dihitung.
 function usageStats(itemId, stock) {
   const row = db.prepare(`SELECT COALESCE(SUM(qty),0) AS total_out, MIN(date) AS first_date
-    FROM moves WHERE item_id = ? AND kind = 'out' AND note != 'Opname impor Excel'`).get(itemId);
+    FROM moves WHERE item_id = ? AND kind = 'out' AND note != 'Opname impor Excel' AND note != 'Opname (SO)'`).get(itemId);
   const totalOut = row.total_out || 0;
   if (!totalOut || !row.first_date) {
     return { hasHistory: false, totalOut: 0, months: 0, avgPerMonth: 0, moi: null, yoi: null, firstDate: null };
@@ -514,6 +527,104 @@ app.get('/api/takes/recent', requireAuth, (req, res) => {
   const rows = db.prepare(`SELECT m.*, i.name AS item_name, i.fd_code FROM moves m
     JOIN items i ON i.id = m.item_id WHERE m.kind = 'out' ORDER BY m.id DESC LIMIT 20`).all();
   ok(res, { takes: rows });
+});
+
+// ---------- stock opname (SO) — semua peran yang login boleh mencatat & ekspor ----------
+// Satu catatan SO = jumlah fisik hasil hitungan manual untuk satu barang pada satu
+// tanggal, lengkap dengan snapshot stok sistem saat dicatat dan selisihnya.
+// Kolom date (tanggal lokal) mengikuti pola tabel moves: created_at disimpan UTC,
+// sedangkan filter per tanggal harus memakai tanggal lokal pengguna.
+function soStatus(diff) { return diff === 0 ? 'Sesuai' : 'Selisih'; }
+function soRow(r) {
+  return {
+    id: r.id, item_id: r.item_id, item_name: r.item_name, fd_code: r.fd_code || '',
+    date: r.date, counted: r.counted, system_stock: r.system_stock, diff: r.diff,
+    status: soStatus(r.diff), current_stock: r.current_stock,
+    username: r.username || '', adjusted: r.adjusted === 1, created_at: r.created_at,
+  };
+}
+function soRecordById(id) {
+  return db.prepare(`SELECT s.*, i.name AS item_name, i.fd_code, i.stock AS current_stock
+    FROM so_records s JOIN items i ON i.id = s.item_id WHERE s.id = ?`).get(id);
+}
+
+app.get('/api/so', requireAuth, (req, res) => {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : todayLocal();
+  const rows = db.prepare(`SELECT s.*, i.name AS item_name, i.fd_code, i.stock AS current_stock
+    FROM so_records s JOIN items i ON i.id = s.item_id WHERE s.date = ? ORDER BY s.created_at DESC, s.id DESC`).all(date);
+  ok(res, { date, records: rows.map(soRow) });
+});
+
+app.post('/api/so', requireAuth, (req, res) => {
+  const countedRaw = req.body.counted;
+  const counted = typeof countedRaw === 'number' ? countedRaw : Number(String(countedRaw == null ? '' : countedRaw).trim());
+  if (countedRaw === undefined || countedRaw === null || String(countedRaw).trim() === '' || !Number.isInteger(counted) || counted < 0) {
+    return fail(res, 400, 'Jumlah SO harus angka bulat 0 atau lebih.');
+  }
+  let item = null;
+  if (req.body.itemId !== undefined && req.body.itemId !== null && String(req.body.itemId) !== '') {
+    const itemId = parseInt(req.body.itemId, 10);
+    if (isNaN(itemId)) return fail(res, 400, 'Barang belum dipilih.');
+    item = db.prepare('SELECT * FROM items WHERE id = ?').get(itemId);
+    if (!item) return fail(res, 404, 'Barang tidak ditemukan.');
+  } else {
+    const code = cleanStr(req.body.code || '');
+    if (!code) return fail(res, 400, 'Kode FD / barcode belum diisi.');
+    item = db.prepare('SELECT * FROM items WHERE fd_code = ? OR barcode = ? LIMIT 1').get(code, code);
+    if (!item) return fail(res, 404, 'Barang dengan kode "' + code + '" tidak ditemukan.');
+  }
+  const diff = counted - item.stock;
+  const r = db.prepare(`INSERT INTO so_records (item_id, date, counted, system_stock, diff, username, adjusted, created_at)
+    VALUES (?,?,?,?,?,?,?,?)`).run(item.id, todayLocal(), counted, item.stock, diff, req.account.username, 0, nowIso());
+  const rec = soRecordById(r.lastInsertRowid);
+  ok(res, { record: soRow(rec), item: itemRow(item) });
+});
+
+// ekspor Excel catatan SO — semua peran yang login boleh (hanya baca)
+app.get('/api/so/export', requireAuth, (req, res) => {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : todayLocal();
+  const rows = db.prepare(`SELECT s.*, i.name AS item_name, i.fd_code FROM so_records s
+    JOIN items i ON i.id = s.item_id WHERE s.date = ? ORDER BY s.created_at ASC, s.id ASC`).all(date);
+  const aoa = [
+    ['Stock Opname — ' + date],
+    [],
+    ['Kode FD', 'Nama Sparepart', 'Stok Sistem', 'Jumlah SO', 'Selisih', 'Status', 'Waktu', 'Diinput oleh'],
+  ];
+  for (const m of rows) {
+    aoa.push([
+      m.fd_code || '', m.item_name || '', m.system_stock, m.counted,
+      m.diff, soStatus(m.diff), m.created_at ? m.created_at.slice(11, 16) : '', m.username || '',
+    ]);
+  }
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{ wch: 14 }, { wch: 34 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 16 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Stock Opname');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="stock-opname-' + date + '.xlsx"');
+  res.send(buf);
+});
+
+// sesuaikan stok sistem ke jumlah SO — Admin saja; sekali saja per catatan
+app.post('/api/so/:id/adjust', requireAuth, requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const r = withTx(() => {
+    const rec = db.prepare('SELECT * FROM so_records WHERE id = ?').get(id);
+    if (!rec) return { error: 'Catatan SO tidak ditemukan.', status: 404 };
+    if (rec.diff === 0) return { error: 'Jumlah SO sudah sesuai dengan stok sistem, tidak perlu disesuaikan.', status: 400 };
+    if (rec.adjusted === 1) return { error: 'Stok sudah pernah disesuaikan dari catatan SO ini.', status: 400 };
+    const item = db.prepare('SELECT * FROM items WHERE id = ?').get(rec.item_id);
+    if (!item) return { error: 'Barang tidak ditemukan.', status: 404 };
+    db.prepare('UPDATE items SET stock = ?, updated_at = ? WHERE id = ?').run(rec.counted, nowIso(), item.id);
+    const kind = rec.diff > 0 ? 'in' : 'out';
+    db.prepare(`INSERT INTO moves (item_id, date, kind, qty, balance, machine, taken_by, note, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(item.id, todayLocal(), kind, Math.abs(rec.diff), rec.counted, '', '', 'Opname (SO)', nowIso());
+    db.prepare('UPDATE so_records SET adjusted = 1 WHERE id = ?').run(id);
+    return { balance: rec.counted, name: item.name };
+  });
+  if (r.error) return fail(res, r.status || 400, r.error);
+  ok(res, { balance: r.balance, name: r.name });
 });
 
 // ---------- history ----------
