@@ -26,11 +26,11 @@ function ageLoan(id, daysAgo) {
 }
 
 class Jar {
-  constructor() { this.cookie = ''; }
+  constructor(base) { this.cookie = ''; this.base = base || BASE; }
   async req(path, opts = {}) {
     const headers = Object.assign({}, opts.headers || {});
     if (this.cookie) headers.Cookie = this.cookie;
-    const r = await fetch(BASE + path, Object.assign({}, opts, { headers }));
+    const r = await fetch(this.base + path, Object.assign({}, opts, { headers }));
     const set = r.headers.get('set-cookie');
     if (set) this.cookie = set.split(';')[0];
     const ct = r.headers.get('content-type') || '';
@@ -242,11 +242,80 @@ async function waitUp() {
     r = await anon.req('/api/loans/' + loanA + '/return-photo');
     check('GET /api/loans/:id/return-photo tanpa login -> 401', r.status === 401, 'status=' + r.status);
 
-    console.log('== 10. Frontend ter-serve ==');
+    console.log('== 10. Field mesin + detail peminjaman ==');
+    r = await admin.j('/api/loans', { toolId: toolA, qty: 1, borrower: 'Agus', machine: 'BLOWMOULD' });
+    check('pinjam dengan mesin BLOWMOULD tersimpan', r.status === 200 && r.json.loan.machine === 'BLOWMOULD', JSON.stringify(r.json).slice(0, 200));
+    const loanM = r.json.loan.id;
+    r = await admin.j('/api/loans', { toolId: toolA, qty: 1, borrower: 'Sari' });
+    check('pinjam tanpa mesin tetap jalan (machine kosong)', r.status === 200 && (r.json.loan.machine === '' || r.json.loan.machine == null), JSON.stringify(r.json).slice(0, 200));
+    const loanNoM = r.json.loan.id;
+    r = await admin.req('/api/loans?status=all');
+    const byIdM = {};
+    for (const x of (r.json.loans || [])) byIdM[x.id] = x;
+    check('GET /api/loans memuat machine (BLOWMOULD + kosong)', byIdM[loanM] && byIdM[loanM].machine === 'BLOWMOULD' && byIdM[loanNoM] && byIdM[loanNoM].machine === '', JSON.stringify(byIdM[loanM]) + ' / ' + JSON.stringify(byIdM[loanNoM]));
+    r = await admin.req('/api/loans/' + loanM);
+    check('GET /api/loans/:id memuat semua field detail (tools, qty, peminjam, mesin, tanggal, status, foto)', r.status === 200 && r.json.loan.tool_name === 'KUNCI PAS 14' && r.json.loan.qty === 1 && r.json.loan.borrower === 'Agus' && r.json.loan.machine === 'BLOWMOULD' && r.json.loan.borrowed_at && r.json.loan.due_at && r.json.loan.status === 'dipinjam' && r.json.loan.hasReturnPhoto === false, JSON.stringify(r.json.loan));
+    r = await admin.req('/api/loans/99999');
+    check('GET /api/loans/:id tidak ada -> 404', r.status === 404, 'status=' + r.status);
+    r = await anon.req('/api/loans/' + loanM);
+    check('GET /api/loans/:id tanpa login -> 401', r.status === 401, 'status=' + r.status);
+    r = await user.req('/api/loans/' + loanM);
+    check('GET /api/loans/:id bisa dilihat User (200)', r.status === 200 && r.json.loan.machine === 'BLOWMOULD', 'status=' + r.status);
+    r = await admin.j('/api/loans/' + loanM + '/return', { photo: PHOTO_1X1 });
+    check('kembalikan pinjaman bermesin', r.status === 200 && r.json.loan.machine === 'BLOWMOULD', JSON.stringify(r.json).slice(0, 200));
+    r = await admin.req('/api/loans/' + loanM);
+    check('detail pinjaman dikembalikan: status + returned_at/by + hasReturnPhoto + mesin', r.status === 200 && r.json.loan.status === 'dikembalikan' && !!r.json.loan.returned_at && r.json.loan.returned_by === 'zico' && r.json.loan.hasReturnPhoto === true && r.json.loan.machine === 'BLOWMOULD', JSON.stringify(r.json.loan));
+
+    console.log('== 11. Migrasi kolom machine (DB lama tanpa kolom machine) ==');
+    const MIG_DB = '/tmp/loans-migration-test.db';
+    const MIG_BASE = 'http://localhost:3113';
+    for (const f of [MIG_DB, MIG_DB + '-wal', MIG_DB + '-shm']) { try { fs.unlinkSync(f); } catch (_) {} }
+    {
+      const d = new DatabaseSync(MIG_DB);
+      d.exec(`CREATE TABLE tools (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at TEXT NOT NULL, created_by TEXT NOT NULL DEFAULT '');
+CREATE TABLE loans (id INTEGER PRIMARY KEY AUTOINCREMENT, tool_id INTEGER REFERENCES tools(id) ON DELETE SET NULL, qty INTEGER NOT NULL, borrower TEXT NOT NULL, borrowed_by TEXT NOT NULL DEFAULT '', borrowed_at TEXT NOT NULL, due_at TEXT NOT NULL, returned_at TEXT DEFAULT '', returned_by TEXT DEFAULT '', return_photo TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'dipinjam' CHECK (status IN ('dipinjam','dikembalikan')))`);
+      d.prepare("INSERT INTO tools (name, created_at, created_by) VALUES ('KUNCI LAMA', ?, 'zico')").run(new Date().toISOString());
+      d.prepare("INSERT INTO loans (tool_id, qty, borrower, borrowed_by, borrowed_at, due_at, status) VALUES (1, 2, 'Lama', 'zico', ?, ?, 'dipinjam')").run(new Date().toISOString(), new Date(Date.now() + 48 * 3600 * 1000).toISOString());
+      d.close();
+    }
+    const migServer = spawn('node', ['server.js'], {
+      cwd: __dirname,
+      env: Object.assign({}, process.env, { PORT: '3113', DB_PATH: MIG_DB }),
+      stdio: 'ignore',
+    });
+    try {
+      let migUp = false;
+      for (let i = 0; i < 40; i++) {
+        try { const rr = await fetch(MIG_BASE + '/api/status'); if (rr.ok) { migUp = true; break; } } catch (_) {}
+        await new Promise((rs) => setTimeout(rs, 250));
+      }
+      check('server uji migrasi jalan (tidak crash saat start)', migUp);
+      if (migUp) {
+        const mig = new Jar(MIG_BASE);
+        let r2 = await mig.j('/api/setup', { password: 'admin123', confirm: 'admin123' });
+        check('setup di DB migrasi', r2.status === 200, 'status=' + r2.status);
+        r2 = await mig.j('/api/login', { username: 'zico', password: 'admin123' });
+        check('login di DB migrasi', r2.status === 200, 'status=' + r2.status);
+        r2 = await mig.req('/api/loans?status=all');
+        check('pinjaman lama TETAP ADA setelah migrasi (1 pinjaman, qty 2, peminjam Lama)', r2.status === 200 && r2.json.loans.length === 1 && r2.json.loans[0].qty === 2 && r2.json.loans[0].borrower === 'Lama', JSON.stringify(r2.json).slice(0, 300));
+        check('pinjaman lama dapat machine kosong (bukan null/error)', r2.json.loans.length === 1 && r2.json.loans[0].machine === '', JSON.stringify(r2.json.loans && r2.json.loans[0]));
+        r2 = await mig.req('/api/loans/1');
+        check('GET /api/loans/:id di DB migrasi (nama tools + machine kosong)', r2.status === 200 && r2.json.loan.tool_name === 'KUNCI LAMA' && r2.json.loan.machine === '', JSON.stringify(r2.json).slice(0, 200));
+        r2 = await mig.j('/api/loans', { toolId: 1, qty: 1, borrower: 'Baru', machine: 'CONVEYOR' });
+        check('pinjam baru dengan mesin di DB migrasi', r2.status === 200 && r2.json.loan.machine === 'CONVEYOR', JSON.stringify(r2.json).slice(0, 200));
+      }
+    } finally {
+      migServer.kill();
+      await new Promise((rs) => setTimeout(rs, 500));
+      for (const f of [MIG_DB, MIG_DB + '-wal', MIG_DB + '-shm']) { try { fs.unlinkSync(f); } catch (_) {} }
+    }
+
+    console.log('== 12. Frontend ter-serve ==');
     r = await admin.req('/index.html');
     check('index.html: tombol nav Pinjam', r.text.includes('data-view="loan"') && r.text.includes('🤝 Pinjam'));
     check('index.html: form tambah tools (nama + tombol + daftar)', r.text.includes('id="tool-name"') && r.text.includes('btn-add-tool') && r.text.includes('id="tool-list"'));
-    check('index.html: picker tools (cari + daftar + terpilih + jumlah + peminjam + simpan)', r.text.includes('id="loan-tool-search"') && r.text.includes('id="loan-tool-list"') && r.text.includes('id="loan-tool-selected"') && r.text.includes('id="loan-qty"') && r.text.includes('id="loan-borrower"') && r.text.includes('btn-save-loan'));
+    check('index.html: picker tools (cari + daftar + terpilih + jumlah + peminjam + mesin + simpan)', r.text.includes('id="loan-tool-search"') && r.text.includes('id="loan-tool-list"') && r.text.includes('id="loan-tool-selected"') && r.text.includes('id="loan-qty"') && r.text.includes('id="loan-borrower"') && r.text.includes('id="loan-machine"') && r.text.includes('btn-save-loan'));
+    check('index.html: view detail peminjaman (tombol kembali + konten)', r.text.includes('id="view-loan-detail"') && r.text.includes('id="loan-detail-content"') && r.text.includes('id="btn-back-loan-detail"'));
     check('index.html: TIDAK ada lagi input kode/scan di form Pinjam', !r.text.includes('id="loan-code"') && !r.text.includes('btn-scan-loan'));
     check('index.html: kartu pengingat + daftar aktif + history + filter', r.text.includes('id="loan-alert"') && r.text.includes('id="loan-active"') && r.text.includes('id="loan-list"') && r.text.includes('id="loan-filter"'));
     check('index.html: form pengembalian + foto wajib', r.text.includes('id="return-box"') && r.text.includes('id="return-photo-camera"') && r.text.includes('btn-save-return'));
@@ -258,8 +327,11 @@ async function waitUp() {
     check('app.js: badge Terlambat + tombol Kembalikan + foto bukti', r.text.includes('⚠️ Terlambat') && r.text.includes('✅ Kembalikan') && r.text.includes('return-photo'));
     check('app.js: tombol simpan pengembalian terkunci tanpa foto', r.text.includes('$(c.save).disabled = true') && r.text.includes('Foto bukti pengembalian wajib'));
     check('app.js: nav Pinjam TIDAK disembunyikan untuk User', !r.text.includes('button[data-view="loan"]'));
+    check('app.js: openLoanDetail + baris history bisa diklik (data-loan-detail / data-supplier-detail)', r.text.includes('openLoanDetail') && r.text.includes('data-loan-detail') && r.text.includes('data-supplier-detail'));
+    check('app.js: simpan pinjam kirim machine + tampil di baris history', r.text.includes("machine: $('#loan-machine').value") && r.text.includes('Mesin '));
+    check('app.js: detail tampilkan foto bukti besar + semua field (mesin, tanggal, status)', r.text.includes('detail-photo') && r.text.includes('Dipakai di mesin') && r.text.includes('return-photo'));
     r = await admin.req('/sw.js');
-    check('sw.js: CACHE v7', r.text.includes('gudang-sparepart-v7'));
+    check('sw.js: CACHE v8', r.text.includes('gudang-sparepart-v8'));
   } finally {
     server.kill();
     await new Promise((r) => setTimeout(r, 500));

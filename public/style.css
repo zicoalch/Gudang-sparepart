@@ -113,6 +113,7 @@ label small { font-weight: 400; color: var(--muted); }
 }
 .row:active { background: var(--surface-muted); }
 .row.selected { outline: 2px solid var(--accent); background: var(--accent-soft); }
+.row[data-loan-detail], .row[data-supplier-detail] { cursor: pointer; }
 .row .r-name { font-weight: 700; }
 .row .r-sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
 .row .r-stock { float: right; font-weight: 800; font-size: 18px; }

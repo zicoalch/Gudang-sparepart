@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS loans (
   qty INTEGER NOT NULL,
   borrower TEXT NOT NULL,
   borrowed_by TEXT NOT NULL DEFAULT '',
+  machine TEXT DEFAULT '',
   borrowed_at TEXT NOT NULL,
   due_at TEXT NOT NULL,
   returned_at TEXT DEFAULT '',
@@ -152,6 +153,7 @@ for (const col of ['photo_hash TEXT DEFAULT \'\'', 'photo_hist TEXT DEFAULT \'\'
       qty INTEGER NOT NULL,
       borrower TEXT NOT NULL,
       borrowed_by TEXT NOT NULL DEFAULT '',
+      machine TEXT DEFAULT '',
       borrowed_at TEXT NOT NULL,
       due_at TEXT NOT NULL,
       returned_at TEXT DEFAULT '',
@@ -180,6 +182,13 @@ for (const col of ['photo_hash TEXT DEFAULT \'\'', 'photo_hist TEXT DEFAULT \'\'
     db.exec('CREATE INDEX IF NOT EXISTS idx_loans_tool ON loans(tool_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_loans_status ON loans(status, due_at)');
   }
+}
+
+// migrasi: kolom mesin yang digunakan untuk peminjaman tools (opsional).
+// ADD COLUMN saja — tabel loans kini berisi data user, jangan drop/recreate.
+{
+  const has = db.prepare("SELECT COUNT(*) c FROM pragma_table_info('loans') WHERE name = 'machine'").get().c;
+  if (!has) db.exec("ALTER TABLE loans ADD COLUMN machine TEXT DEFAULT ''");
 }
 
 // Indeks loans — dibuat di sini (setelah migrasi) supaya DB lama yang skema
@@ -686,6 +695,7 @@ function loanRow(r) {
   return {
     id: r.id, tool_id: r.tool_id, tool_name: r.tool_name || '(tools dihapus)',
     qty: r.qty, borrower: r.borrower, borrowed_by: r.borrowed_by || '',
+    machine: r.machine || '',
     borrowed_at: r.borrowed_at, due_at: r.due_at,
     returned_at: r.returned_at || '', returned_by: r.returned_by || '',
     status: r.status, overdue: r.status === 'dipinjam' && now > due,
@@ -696,6 +706,7 @@ function loanRow(r) {
 app.post('/api/loans', requireAuth, (req, res) => {
   const qty = parseInt(req.body.qty, 10);
   const borrower = cleanStr(req.body.borrower);
+  const machine = cleanStr(req.body.machine || ''); // opsional: mesin yang dipakai
   if (isNaN(qty) || qty <= 0) return fail(res, 400, 'Jumlah harus angka lebih dari 0.');
   if (!borrower) return fail(res, 400, 'Nama peminjam wajib diisi.');
   let tool = null;
@@ -712,8 +723,8 @@ app.post('/api/loans', requireAuth, (req, res) => {
   }
   const borrowedAt = nowIso();
   const dueAt = new Date(Date.now() + LOAN_DUE_MS).toISOString();
-  const ins = db.prepare(`INSERT INTO loans (tool_id, qty, borrower, borrowed_by, borrowed_at, due_at, status)
-    VALUES (?,?,?,?,?,?,?)`).run(tool.id, qty, borrower, req.account.username, borrowedAt, dueAt, 'dipinjam');
+  const ins = db.prepare(`INSERT INTO loans (tool_id, qty, borrower, borrowed_by, machine, borrowed_at, due_at, status)
+    VALUES (?,?,?,?,?,?,?,?)`).run(tool.id, qty, borrower, req.account.username, machine, borrowedAt, dueAt, 'dipinjam');
   const loan = loanById(ins.lastInsertRowid);
   ok(res, { loan: loanRow(loan) });
 });
@@ -729,6 +740,13 @@ app.get('/api/loans', requireAuth, (req, res) => {
   else if (filter === 'terlambat') loans = all.filter((l) => l.overdue);
   const overdueCount = all.filter((l) => l.overdue).length;
   ok(res, { loans, overdueCount });
+});
+
+// Detail satu pinjaman tools (untuk tampilan detail dari history).
+app.get('/api/loans/:id', requireAuth, (req, res) => {
+  const loan = loanById(parseInt(req.params.id, 10));
+  if (!loan) return fail(res, 404, 'Pinjaman tidak ditemukan.');
+  ok(res, { loan: loanRow(loan) });
 });
 
 app.post('/api/loans/:id/return', requireAuth, (req, res) => {
@@ -874,6 +892,13 @@ app.get('/api/supplier-loans', requireAuth, requireAdmin, (req, res) => {
   else if (filter === 'terlambat') loans = all.filter((l) => l.overdue);
   const overdueCount = all.filter((l) => l.overdue).length;
   ok(res, { loans, overdueCount });
+});
+
+// Detail satu pinjaman supplier (untuk tampilan detail dari history).
+app.get('/api/supplier-loans/:id', requireAuth, requireAdmin, (req, res) => {
+  const loan = supplierLoanById(parseInt(req.params.id, 10));
+  if (!loan) return fail(res, 404, 'Pinjaman supplier tidak ditemukan.');
+  ok(res, { loan: supplierLoanRow(loan) });
 });
 
 app.post('/api/supplier-loans/:id/return', requireAuth, requireAdmin, (req, res) => {

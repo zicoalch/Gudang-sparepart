@@ -9,6 +9,7 @@ let importJobId = null, importSheet = null;
 let takeItem = null;
 let soItem = null;
 let detailId = null, detailBack = 'dashboard';
+let loanDetailKind = 'loan', loanDetailBack = 'loan'; // detail peminjaman: 'loan' | 'supplier'
 let deferredPrompt = null;
 
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; });
@@ -81,7 +82,7 @@ function showView(name) {
   $$('.view').forEach((v) => v.classList.add('hidden'));
   const el = $('#view-' + name);
   if (el) el.classList.remove('hidden');
-  $$('#topnav button').forEach((b) => b.classList.toggle('active', b.dataset.view === name || (name === 'detail' && b.dataset.view === 'inventory') || (name === 'add' && b.dataset.view === 'inventory')));
+  $$('#topnav button').forEach((b) => b.classList.toggle('active', b.dataset.view === name || (name === 'detail' && b.dataset.view === 'inventory') || (name === 'add' && b.dataset.view === 'inventory') || (name === 'loan-detail' && b.dataset.view === loanDetailKind)));
   window.scrollTo(0, 0);
   if (name === 'dashboard') loadDashboard();
   if (name === 'inventory') loadInventory();
@@ -794,9 +795,9 @@ $('#btn-save-loan').addEventListener('click', async () => {
   const btn = $('#btn-save-loan');
   btn.disabled = true;
   try {
-    const r = await apiJSON('/api/loans', { toolId: selectedTool.id, qty: $('#loan-qty').value, borrower: $('#loan-borrower').value });
+    const r = await apiJSON('/api/loans', { toolId: selectedTool.id, qty: $('#loan-qty').value, borrower: $('#loan-borrower').value, machine: $('#loan-machine').value });
     toast('Peminjaman tersimpan. "' + r.loan.tool_name + '" ' + fmt(r.loan.qty) + ' pcs dipinjam ' + r.loan.borrower + '. Jatuh tempo ' + fmtDateTimeLocal(r.loan.due_at) + '.');
-    $('#loan-qty').value = '1'; $('#loan-borrower').value = '';
+    $('#loan-qty').value = '1'; $('#loan-borrower').value = ''; $('#loan-machine').value = '';
     selectedTool = null;
     $('#loan-tool-selected').classList.add('hidden'); $('#loan-fields').classList.add('hidden');
     renderLoanToolList();
@@ -822,12 +823,16 @@ function loanRowHtml(l, withReturnBtn) {
   }
   const btn = withReturnBtn && l.status === 'dipinjam'
     ? ' <button class="btn btn-small btn-primary" data-return="' + l.id + '" data-name="' + esc(l.tool_name) + '">✅ Kembalikan</button>' : '';
-  return '<div class="row">' + photoHtml
+  return '<div class="row" data-loan-detail="' + l.id + '">' + photoHtml
     + '<span class="r-stock">−' + fmt(l.qty) + '</span>'
     + '<span class="r-name">🔧 ' + esc(l.tool_name) + ' ' + loanBadge(l) + '</span>'
-    + '<div class="r-sub">' + esc(l.borrower) + ' • ' + sub + btn + '</div></div>';
+    + '<div class="r-sub">' + esc(l.borrower) + (l.machine ? ' • Mesin ' + esc(l.machine) : '') + ' • ' + sub + btn + '</div></div>';
 }
 function bindLoanRows(box) {
+  box.querySelectorAll('[data-loan-detail]').forEach((el) => el.addEventListener('click', (e) => {
+    if (e.target.closest('[data-return]') || e.target.closest('a')) return;
+    openLoanDetail('loan', +el.dataset.loanDetail, 'loan');
+  }));
   box.querySelectorAll('[data-return]').forEach((b) => b.addEventListener('click', (e) => {
     e.stopPropagation();
     openReturnBox('loan', +b.dataset.return, b.dataset.name);
@@ -869,6 +874,57 @@ async function loadLoanHistory() {
   } catch (e) { box.innerHTML = '<p class="error">' + esc(e.message) + '</p>'; }
 }
 $('#loan-filter').addEventListener('change', (e) => { loanFilter = e.target.value; loadLoanHistory(); });
+
+// ---------- detail peminjaman (Pinjam tools & Supplier) ----------
+// Baris history (Pinjam + Supplier) bisa diklik → tampilkan semua informasi
+// pinjaman itu, termasuk foto bukti pengembalian ukuran besar (ketuk foto
+// untuk membuka ukuran penuh di tab baru, seperti thumbnail di baris history).
+async function openLoanDetail(kind, id, back) {
+  loanDetailKind = kind;
+  loanDetailBack = back || kind;
+  showView('loan-detail');
+  const box = $('#loan-detail-content');
+  box.innerHTML = '<p class="muted">Memuat…</p>';
+  try {
+    const path = kind === 'supplier' ? '/api/supplier-loans/' + id : '/api/loans/' + id;
+    const r = await api(path);
+    const l = r.loan;
+    let html = '<div class="card">';
+    if (l.hasReturnPhoto) {
+      const photoUrl = (kind === 'supplier' ? '/api/supplier-loans/' : '/api/loans/') + l.id + '/return-photo';
+      html += '<a href="' + photoUrl + '" target="_blank" rel="noopener"><img class="detail-photo" src="' + photoUrl + '" alt="Foto bukti pengembalian"></a>'
+        + '<p class="muted small" style="text-align:center">Foto bukti pengembalian — ketuk untuk melihat lebih besar.</p>';
+    }
+    if (kind === 'supplier') {
+      html += '<h2 style="margin-top:0">' + esc(l.item_name) + ' ' + supplierBadge(l) + '</h2>'
+        + '<dl class="kv">'
+        + '<dt>Kode FD</dt><dd>' + esc(l.fd_code || '-') + (l.non_stock ? ' <span class="badge">Non-stok</span>' : '') + '</dd>'
+        + '<dt>Jumlah</dt><dd><b>' + fmt(l.qty) + ' pcs</b></dd>'
+        + '<dt>Supplier</dt><dd>' + esc(l.supplier) + '</dd>'
+        + '<dt>Tujuan</dt><dd>' + (l.purpose === 'service' ? 'Service' : 'Contoh') + '</dd>'
+        + '<dt>Dibawa oleh</dt><dd>' + esc(l.taken_by || '-') + '</dd>'
+        + '<dt>Dibawa</dt><dd>' + fmtDateTimeLocal(l.taken_at) + '</dd>'
+        + '<dt>Jatuh tempo</dt><dd>' + fmtDateTimeLocal(l.due_at) + ' (pengingat ' + fmt(l.reminder_days) + ' hari)' + (l.overdue ? ' — <span class="badge red">Terlambat ' + fmt(l.overdue_days) + ' hari</span>' : '') + '</dd>'
+        + '<dt>Status</dt><dd>' + (l.status === 'dikembalikan' ? 'Dikembalikan ' + fmtDateTimeLocal(l.returned_at) + ' • Oleh ' + esc(l.returned_by || '-') : l.status === 'tidak_kembali' ? 'Ditandai tidak kembali ' + fmtDateTimeLocal(l.returned_at) + ' • Oleh ' + esc(l.returned_by || '-') : 'Dibawa — belum kembali') + '</dd>'
+        + '</dl>';
+    } else {
+      html += '<h2 style="margin-top:0">🔧 ' + esc(l.tool_name) + ' ' + loanBadge(l) + '</h2>'
+        + '<dl class="kv">'
+        + '<dt>Jumlah</dt><dd><b>' + fmt(l.qty) + ' pcs</b></dd>'
+        + '<dt>Dipinjam oleh</dt><dd>' + esc(l.borrower) + '</dd>'
+        + '<dt>Dipakai di mesin</dt><dd>' + esc(l.machine || '-') + '</dd>'
+        + '<dt>Dicatat oleh</dt><dd>' + esc(l.borrowed_by || '-') + '</dd>'
+        + '<dt>Dipinjam</dt><dd>' + fmtDateTimeLocal(l.borrowed_at) + '</dd>'
+        + '<dt>Jatuh tempo</dt><dd>' + fmtDateTimeLocal(l.due_at) + (l.overdue ? ' — <span class="badge red">Terlambat ' + fmt(l.overdue_days) + ' hari</span>' : '') + '</dd>'
+        + '<dt>Status</dt><dd>' + (l.status === 'dikembalikan' ? 'Dikembalikan ' + fmtDateTimeLocal(l.returned_at) + ' • Oleh ' + esc(l.returned_by || '-') : 'Dipinjam — belum kembali') + '</dd>'
+        + '</dl>';
+    }
+    html += '<p><button class="btn" id="btn-close-loan-detail">‹ Kembali</button></p></div>';
+    box.innerHTML = html;
+    $('#btn-close-loan-detail').addEventListener('click', () => showView(loanDetailBack));
+  } catch (e) { box.innerHTML = '<p class="error">' + esc(e.message) + '</p>'; }
+}
+$('#btn-back-loan-detail').addEventListener('click', () => showView(loanDetailBack));
 
 // ---------- kotak pengembalian (dipakai Pinjam tools & Supplier) ----------
 const returnState = { loan: { id: null, photo: '' }, supplier: { id: null, photo: '' } };
@@ -995,16 +1051,17 @@ function supplierRowHtml(l, withButtons) {
     btns = ' <button class="btn btn-small btn-primary" data-return-supplier="' + l.id + '" data-name="' + esc(l.item_name) + '">✅ Kembalikan</button>'
       + ' <button class="btn btn-small" data-not-returned="' + l.id + '" data-name="' + esc(l.item_name) + '">Tidak kembali</button>';
   }
-  return '<div class="row" data-item="' + (l.item_id == null ? '' : l.item_id) + '">' + photoHtml
+  return '<div class="row" data-supplier-detail="' + l.id + '">' + photoHtml
     + '<span class="r-stock">−' + fmt(l.qty) + '</span>'
     + '<span class="r-name">' + esc(l.item_name) + ' ' + supplierBadge(l) + '</span>'
     + '<div class="r-sub">' + esc(l.supplier) + ' • ' + sub + btns + '</div></div>';
 }
 function bindSupplierRows(box) {
-  box.querySelectorAll('[data-item]').forEach((el) => el.addEventListener('click', (e) => {
+  // Ketuk baris history → detail peminjaman supplier (bukan detail barang).
+  // Tombol Kembalikan / Tidak kembali dan link foto dikecualikan.
+  box.querySelectorAll('[data-supplier-detail]').forEach((el) => el.addEventListener('click', (e) => {
     if (e.target.closest('[data-return-supplier]') || e.target.closest('[data-not-returned]') || e.target.closest('a')) return;
-    if (!el.dataset.item) return;
-    openDetail(+el.dataset.item, 'supplier');
+    openLoanDetail('supplier', +el.dataset.supplierDetail, 'supplier');
   }));
   box.querySelectorAll('[data-return-supplier]').forEach((b) => b.addEventListener('click', (e) => {
     e.stopPropagation();

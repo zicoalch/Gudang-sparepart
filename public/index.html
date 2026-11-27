@@ -308,6 +308,9 @@
               <input id="loan-borrower" placeholder="Nama orang yang meminjam" autocomplete="off">
             </label>
           </div>
+          <label>Dipakai di mesin (opsional)
+            <input id="loan-machine" placeholder="BLOWMOULD, CONVEYOR, …" autocomplete="off">
+          </label>
           <button class="btn btn-primary btn-block" id="btn-save-loan">💾 Simpan peminjaman</button>
         </div>
         <p id="loan-error" class="error hidden"></p>
@@ -475,6 +478,12 @@
     <section id="view-detail" class="view hidden">
       <button class="btn" id="btn-back-detail">‹ Kembali</button>
       <div id="detail-content"></div>
+    </section>
+
+    <!-- DETAIL PEMINJAMAN (Pinjam tools / Supplier) -->
+    <section id="view-loan-detail" class="view hidden">
+      <button class="btn" id="btn-back-loan-detail">‹ Kembali</button>
+      <div id="loan-detail-content"></div>
     </section>
 
     <!-- AKUN -->

@@ -266,7 +266,27 @@ async function waitUp() {
     r = await anon.j('/api/settings/supplier-reminder-days', { days: 5 }, 'PUT');
     check('PUT setting pengingat tanpa login -> 401', r.status === 401, 'status=' + r.status);
 
-    console.log('== 12. Frontend ter-serve ==');
+    console.log('== 12. Detail peminjaman supplier (GET single) ==');
+    r = await admin.req('/api/supplier-loans/' + loanA);
+    check('GET /api/supplier-loans/:id memuat semua field detail (nama, Kode FD, qty, supplier, purpose, tanggal, status, foto)', r.status === 200 && r.json.loan.item_name === 'SEAL KARET 10MM' && r.json.loan.fd_code === 'FD013610' && r.json.loan.qty === 2 && r.json.loan.supplier === 'PT Maju Jaya' && r.json.loan.purpose === 'contoh' && r.json.loan.taken_at && r.json.loan.due_at && r.json.loan.status === 'dikembalikan' && r.json.loan.hasReturnPhoto === true && r.json.loan.non_stock === false && r.json.loan.reminder_days === 2 && !!r.json.loan.returned_at && r.json.loan.returned_by === 'zico', JSON.stringify(r.json.loan));
+    r = await admin.req('/api/supplier-loans/' + loanNonStock);
+    check('GET /api/supplier-loans/:id non-stok: manual_name/code + penanda non_stock', r.status === 200 && r.json.loan.non_stock === true && r.json.loan.manual_name === 'SEAL KARET CONTOH' && r.json.loan.manual_code === 'FD999999' && r.json.loan.item_name === 'SEAL KARET CONTOH', JSON.stringify(r.json.loan));
+    r = await admin.req('/api/supplier-loans/' + loanC);
+    check('GET /api/supplier-loans/:id tidak_kembali: status + returned_at/by', r.status === 200 && r.json.loan.status === 'tidak_kembali' && !!r.json.loan.returned_at && r.json.loan.returned_by === 'zico', JSON.stringify(r.json.loan));
+    r = await admin.req('/api/supplier-loans/' + loanD);
+    check('GET /api/supplier-loans/:id pinjaman service: purpose service + stok saat ini', r.status === 200 && r.json.loan.purpose === 'service' && r.json.loan.current_stock === 2, JSON.stringify(r.json.loan));
+    r = await admin.req('/api/supplier-loans/99999');
+    check('GET /api/supplier-loans/:id tidak ada -> 404', r.status === 404, 'status=' + r.status);
+    r = await anon.req('/api/supplier-loans/' + loanA);
+    check('GET /api/supplier-loans/:id tanpa login -> 401', r.status === 401, 'status=' + r.status);
+    r = await user.req('/api/supplier-loans/' + loanA);
+    check('GET /api/supplier-loans/:id oleh User -> 403 (khusus Admin)', r.status === 403, 'status=' + r.status);
+    r = await admin.req('/api/supplier-loans?status=all');
+    const supById = {};
+    for (const x of (r.json.loans || [])) supById[x.id] = x;
+    check('GET /api/supplier-loans list memuat semua field detail (non_stock, reminder_days, hasReturnPhoto)', supById[loanA] && supById[loanA].non_stock === false && supById[loanA].reminder_days === 2 && supById[loanA].hasReturnPhoto === true && supById[loanNonStock] && supById[loanNonStock].non_stock === true && supById[loanNonStock].manual_code === 'FD999999', JSON.stringify(supById[loanA]));
+
+    console.log('== 13. Frontend ter-serve ==');
     r = await admin.req('/index.html');
     check('index.html: tombol nav Supplier', r.text.includes('data-view="supplier"') && r.text.includes('🏭 Supplier'));
     check('index.html: view Supplier + form kode/scan/jumlah/supplier/tujuan/simpan', r.text.includes('id="view-supplier"') && r.text.includes('id="supplier-code"') && r.text.includes('btn-scan-supplier') && r.text.includes('id="supplier-qty"') && r.text.includes('id="supplier-name"') && r.text.includes('id="supplier-purpose"') && r.text.includes('btn-save-supplier'));
@@ -275,8 +295,10 @@ async function waitUp() {
     check('index.html: kartu pengingat + daftar aktif + history + filter', r.text.includes('id="supplier-alert"') && r.text.includes('id="supplier-active"') && r.text.includes('id="supplier-list"') && r.text.includes('id="supplier-filter"'));
     check('index.html: form pengembalian supplier + foto wajib + tombol tidak kembali', r.text.includes('id="return-box-supplier"') && r.text.includes('id="return-supplier-photo-camera"') && r.text.includes('btn-save-return-supplier'));
     check('index.html: kartu peringatan supplier di Dashboard', r.text.includes('id="dash-supplier-alert"'));
+    check('index.html: view detail peminjaman (tombol kembali + konten)', r.text.includes('id="view-loan-detail"') && r.text.includes('id="loan-detail-content"') && r.text.includes('id="btn-back-loan-detail"'));
     r = await admin.req('/app.js');
     check('app.js: loadSupplierLoans + lookupSupplier + loadSupplierAlert', r.text.includes('loadSupplierLoans') && r.text.includes('lookupSupplier') && r.text.includes('loadSupplierAlert'));
+    check('app.js: openLoanDetail + baris supplier bisa diklik (data-supplier-detail)', r.text.includes('openLoanDetail') && r.text.includes('data-supplier-detail') && r.text.includes("openLoanDetail('supplier'"));
     check('app.js: scan target supplier', r.text.includes("openScanner('supplier')") && r.text.includes("scanTarget === 'supplier'"));
     check('app.js: nav Supplier disembunyikan untuk User (pola SO)', r.text.includes('button[data-view="supplier"]'));
     check('app.js: guard showView Supplier hanya Admin', r.text.includes('Menu Supplier hanya untuk Admin.'));
@@ -284,7 +306,7 @@ async function waitUp() {
     check('app.js: badge Terlambat + tombol Kembalikan + Tidak kembali', r.text.includes('⚠️ Terlambat') && r.text.includes('✅ Kembalikan') && r.text.includes('Tidak kembali'));
     check('app.js: simpan setting pengingat via PUT /api/settings/supplier-reminder-days', r.text.includes("'/api/settings/supplier-reminder-days'") && r.text.includes("'PUT'"));
     r = await admin.req('/sw.js');
-    check('sw.js: CACHE v7', r.text.includes('gudang-sparepart-v7'));
+    check('sw.js: CACHE v8', r.text.includes('gudang-sparepart-v8'));
   } finally {
     server.kill();
     await new Promise((r) => setTimeout(r, 500));
