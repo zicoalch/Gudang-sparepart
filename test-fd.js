@@ -114,7 +114,7 @@ async function waitUp() {
     check('app: confirm simpan saat duplikat (ubah)', appJs.includes('Tetap simpan perubahan ini?'));
     check('app: submit menunggu cek segar sebelum simpan', appJs.includes('const dup = await checkFdDuplicate();'));
     check('app: reset form bersihkan peringatan + fdDupItem', appJs.includes("fdDupItem = null;") && appJs.includes("$('#add-fd-warning').classList.add('hidden')"));
-    check('sw.js: CACHE v9', swJs.includes("gudang-sparepart-v9"));
+    check('sw.js: CACHE v10', swJs.includes("gudang-sparepart-v10"));
 
     console.log('\n' + pass + ' lolos, ' + fail + ' gagal.');
     code = fail ? 1 : 0;

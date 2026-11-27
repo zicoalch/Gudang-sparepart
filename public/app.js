@@ -672,6 +672,9 @@ $('#btn-run-photo-search').addEventListener('click', async () => {
 let lastTakeQuery = '';
 function selectTakeItem(item) {
   takeItem = item;
+  // barang terpilih untuk teks ini: Enter/blur ulang dengan teks sama tidak
+  // me-render ulang (dan tidak menyembunyikan field yang sudah tampil)
+  lastTakeQuery = $('#take-code').value.trim();
   $('#take-suggestions').classList.add('hidden');
   $('#take-error').classList.add('hidden');
   $('#take-item').innerHTML = '<div class="row"><span class="r-stock">' + fmt(item.stock) + ' <small>' + esc(item.unit) + '</small></span>'
@@ -726,7 +729,52 @@ async function lookupTake() {
 }
 $('#take-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); lookupTake(); } });
 $('#take-code').addEventListener('change', lookupTake);
-$('#take-code').addEventListener('input', () => { $('#take-suggestions').classList.add('hidden'); });
+// Pencarian LIVE saat mengetik: saran nama muncul tanpa tekan Enter (di HP,
+// Enter sering hanya menutup keyboard, jadi saran tidak pernah terlihat).
+// Debounce 250 ms supaya ketik cepat tidak membanjiri server; respons yang
+// kedaluwarsa diabaikan supaya saran lama tidak menimpa saran baru.
+let takeLiveTimer = null;
+let takeLiveSeq = 0;
+let lastLiveQuery = '';
+async function liveTakeSearch() {
+  const q = $('#take-code').value.trim();
+  if (!q) {
+    // input dikosongkan: sembunyikan saran + bersihkan pilihan (mirip lookupTake)
+    $('#take-suggestions').classList.add('hidden');
+    $('#take-error').classList.add('hidden');
+    $('#take-item').classList.add('hidden');
+    $('#take-fields').classList.add('hidden');
+    takeItem = null;
+    lastTakeQuery = '';
+    lastLiveQuery = '';
+    return;
+  }
+  // barang sudah terpilih untuk teks ini: jangan ganggu (field tetap tampil)
+  if (q === lastTakeQuery) return;
+  // teks ini sudah dicari live: jangan fetch ulang
+  if (q === lastLiveQuery) return;
+  // query berubah dari barang yang tadi terpilih: bersihkan pilihan lama
+  // (pilih saran baru akan menampilkan field lagi via selectTakeItem)
+  if (takeItem) {
+    takeItem = null;
+    $('#take-item').classList.add('hidden');
+    $('#take-fields').classList.add('hidden');
+  }
+  const seq = ++takeLiveSeq;
+  try {
+    const r = await api('/api/items?search=' + encodeURIComponent(q) + '&filter=all&page=1&perPage=8');
+    if (seq !== takeLiveSeq) return; // sudah kedaluwarsa: ada pencarian lebih baru
+    if ($('#take-code').value.trim() !== q) return; // teks sudah berubah
+    if (q === lastTakeQuery) return; // sementara itu sudah terpilih (mis. lewat Enter)
+    lastLiveQuery = q;
+    if (r.items && r.items.length) renderTakeSuggestions(r.items);
+    else $('#take-suggestions').classList.add('hidden');
+  } catch (_) { /* diam saat mengetik: jangan tampilkan error di tengah ketikan */ }
+}
+$('#take-code').addEventListener('input', () => {
+  clearTimeout(takeLiveTimer);
+  takeLiveTimer = setTimeout(liveTakeSearch, 250);
+});
 $('#btn-save-take').addEventListener('click', async () => {
   if (!takeItem) { toast('Pilih barang dulu (ketik Kode FD / barcode).'); return; }
   const btn = $('#btn-save-take');

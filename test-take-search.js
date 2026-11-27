@@ -2,8 +2,14 @@
 // TIDAK menyentuh database utama. Jalankan: node test-take-search.js
 // Latar: user mengetik "Masker kain" (nama barang) di kolom Ambil dan mendapat
 // "Barang dengan kode ... tidak ditemukan" karena lookup hanya cocok Kode FD/barcode persis.
+// Bagian 8 memakai jsdom untuk simulasi DOM sungguhan (event input, mousedown,
+// Enter, klik Simpan). Pasang sekali: npm install --no-save jsdom
+// (node_modules di-gitignore, tidak ikut ter-push). Bila jsdom tidak ada,
+// bagian 8 dilewati (SKIP) dan bagian lain tetap jalan.
 const fs = require('fs');
 const { spawn } = require('child_process');
+let JSDOM = null;
+try { ({ JSDOM } = require('jsdom')); } catch (_) { /* bagian 8 dilewati */ }
 
 const BASE = 'http://localhost:3114';
 const DB_PATH = '/tmp/take-search-test.db';
@@ -128,8 +134,124 @@ async function waitUp() {
     check('app.js: pesan tidak ditemukan menyebut kode dan nama', r.text.includes('kode atau nama'));
     check('app.js: jalur cepat lookup kode persis tetap ada', r.text.includes("/api/items/lookup?code="));
     check('app.js: saran tampilkan Kode FD + stok + rak/shaf/box', r.text.includes('fd_code') && r.text.includes('Rak ') && r.text.includes('Shaf '));
+    check('app.js: pencarian live saat mengetik (debounce 250 ms)', r.text.includes('liveTakeSearch') && r.text.includes('setTimeout(liveTakeSearch, 250)'));
+    check('app.js: tidak ada lagi handler yang menyembunyikan saran saat mengetik', !r.text.includes("addEventListener('input', () => { $('#take-suggestions').classList.add('hidden'); })"));
+    check('app.js: respons pencarian kedaluwarsa diabaikan (seq)', r.text.includes('takeLiveSeq'));
+    check('app.js: barang terpilih dicatat (lastTakeQuery) supaya blur tidak me-render ulang', r.text.includes("lastTakeQuery = $('#take-code').value.trim()"));
     r = await admin.req('/sw.js');
-    check('sw.js: CACHE v9', r.text.includes('gudang-sparepart-v9'));
+    check('sw.js: CACHE v10', r.text.includes('gudang-sparepart-v10'));
+
+    console.log('== 8. Simulasi DOM: pencarian LIVE saat mengetik (jsdom) ==');
+    if (!JSDOM) {
+      console.log('  SKIP  jsdom belum terpasang — jalankan: npm install --no-save jsdom');
+    } else {
+      const htmlR = await admin.req('/index.html');
+      const jsR = await admin.req('/app.js');
+      check('index.html terambil untuk jsdom', htmlR.status === 200 && htmlR.text.includes('take-code'));
+      check('app.js terambil untuk jsdom', jsR.status === 200 && jsR.text.includes('liveTakeSearch'));
+      let searchReqs = 0;
+      const nodeFetch = fetch;
+      const dom = new JSDOM(htmlR.text, { url: BASE + '/', runScripts: 'outside-only', pretendToBeVisual: true });
+      dom.window.scrollTo = () => {};
+      dom.window.fetch = (url, opts = {}) => {
+        const abs = String(url).startsWith('http') ? String(url) : BASE + url;
+        if (abs.includes('/api/items?search=')) searchReqs++;
+        const headers = Object.assign({}, opts.headers || {});
+        if (admin.cookie) headers.Cookie = admin.cookie;
+        return nodeFetch(abs, Object.assign({}, opts, { headers }));
+      };
+      dom.window.eval(jsR.text);
+      const doc = dom.window.document;
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const sugBox = () => doc.querySelector('#take-suggestions');
+      const sugCount = () => sugBox().querySelectorAll('[data-take-suggest]').length;
+      const isHidden = (el) => el.classList.contains('hidden');
+      const type = async (text) => {
+        const inp = doc.querySelector('#take-code');
+        inp.value = text;
+        inp.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+      };
+      // tunggu boot(): status -> me -> enterApp -> dashboard
+      let booted = false;
+      for (let i = 0; i < 20 && !booted; i++) {
+        await sleep(250);
+        booted = !isHidden(doc.querySelector('#app')) && isHidden(doc.querySelector('#view-login'));
+      }
+      check('boot jsdom: masuk aplikasi sebagai Admin', booted);
+      // buka tab Ambil
+      doc.querySelector('#topnav button[data-view="take"]').click();
+      await sleep(300);
+      check('tab Ambil terbuka', !isHidden(doc.querySelector('#view-take')));
+      const input = doc.querySelector('#take-code');
+
+      // 8a. Debounce: ketik cepat 6 huruf -> hanya 1 request pencarian
+      searchReqs = 0;
+      for (const t of ['m', 'ma', 'mas', 'mask', 'maske', 'masker']) { await type(t); await sleep(30); }
+      await sleep(600);
+      check('debounce: ketik cepat 6 huruf -> hanya 1 request pencarian', searchReqs === 1, 'requests=' + searchReqs);
+      check('ketik "masker" TANPA Enter -> saran live muncul (2)', sugCount() === 2 && !isHidden(sugBox()), 'saran=' + sugCount());
+
+      // 8b. Menyempit saat mengetik lebih panjang
+      await type('m'); await sleep(500);
+      check('ketik "m" -> 3 saran', sugCount() === 3, 'saran=' + sugCount());
+      await type('ma'); await sleep(500);
+      check('ketik "ma" -> saran menyempit jadi 2', sugCount() === 2, 'saran=' + sugCount());
+
+      // 8c. Hapus isi -> saran hilang
+      await type(''); await sleep(500);
+      check('hapus isi input -> saran hilang', isHidden(sugBox()), 'saran=' + sugCount());
+
+      // 8d. Pilih saran (mousedown) -> preview + field Jumlah/Mesin/Nama pemakai tampil
+      await type('masker'); await sleep(500);
+      check('ketik "masker" lagi -> 2 saran', sugCount() === 2, 'saran=' + sugCount());
+      const btn2 = [...sugBox().querySelectorAll('[data-take-suggest]')].find((b) => b.textContent.includes('FD100002'));
+      check('saran FD100002 ditemukan', !!btn2);
+      btn2.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      await sleep(200);
+      check('pilih saran -> #take-item tampil berisi MASKER KAIN FD100002',
+        !isHidden(doc.querySelector('#take-item')) && doc.querySelector('#take-item').textContent.includes('MASKER KAIN') && doc.querySelector('#take-item').textContent.includes('FD100002'));
+      check('pilih saran -> #take-fields tampil (Jumlah, Mesin, Nama pemakai, Simpan)',
+        !isHidden(doc.querySelector('#take-fields')) && !!doc.querySelector('#take-qty') && !!doc.querySelector('#take-by') && !!doc.querySelector('#btn-save-take'));
+      // 8e. Simpan dengan Jumlah + Nama pemakai terisi -> stok berkurang
+      const stockBefore = (await admin.req('/api/items/' + idMasker2)).json.item.stock;
+      doc.querySelector('#take-qty').value = '1';
+      doc.querySelector('#take-machine').value = 'BLOWMOULD';
+      doc.querySelector('#take-by').value = 'Davin';
+      doc.querySelector('#btn-save-take').click();
+      await sleep(600);
+      const stockAfter = (await admin.req('/api/items/' + idMasker2)).json.item.stock;
+      check('simpan pengambilan via form (qty 1, Davin) -> stok berkurang', stockAfter === stockBefore - 1, 'sebelum=' + stockBefore + ' sesudah=' + stockAfter);
+
+      // 8f. Query berubah setelah terpilih -> field hilang, pilih saran baru -> field tampil lagi
+      await type('masker'); await sleep(500);
+      const btnA = [...sugBox().querySelectorAll('[data-take-suggest]')].find((b) => b.textContent.includes('FD100002'));
+      btnA.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      await sleep(200);
+      check('pilih saran lagi -> #take-fields tampil', !isHidden(doc.querySelector('#take-fields')));
+      await type('sarung'); await sleep(500);
+      check('ganti query ke "sarung" -> pilihan lama dibersihkan, #take-fields hilang', isHidden(doc.querySelector('#take-fields')) && isHidden(doc.querySelector('#take-item')));
+      check('ganti query ke "sarung" -> saran baru muncul (1)', sugCount() === 1 && sugBox().textContent.includes('SARUNG TANGAN KARET'), 'saran=' + sugCount());
+      const btnS = sugBox().querySelector('[data-take-suggest]');
+      btnS.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      await sleep(200);
+      check('pilih saran baru -> #take-fields tampil lagi + preview SARUNG',
+        !isHidden(doc.querySelector('#take-fields')) && doc.querySelector('#take-item').textContent.includes('SARUNG TANGAN KARET'));
+
+      // 8g. Enter dengan Kode FD persis -> tetap langsung terpilih
+      input.value = 'FD100001';
+      input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await sleep(500);
+      check('Enter "FD100001" -> langsung terpilih (preview tampil)',
+        !isHidden(doc.querySelector('#take-item')) && doc.querySelector('#take-item').textContent.includes('FD100001'));
+
+      // 8h. Nama tidak ada -> pesan tidak ditemukan
+      await type('tidakada'); await sleep(500);
+      check('ketik nama tidak ada -> saran tetap tersembunyi', isHidden(sugBox()));
+      input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await sleep(500);
+      check('Enter nama tidak ada -> pesan tidak ditemukan tampil',
+        !isHidden(doc.querySelector('#take-error')) && doc.querySelector('#take-error').textContent.includes('tidak ditemukan'));
+    }
   } finally {
     server.kill();
     await new Promise((r) => setTimeout(r, 500));
