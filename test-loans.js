@@ -87,7 +87,9 @@ async function waitUp() {
     r = await admin.j('/api/tools', { name: '   ' });
     check('nama spasi saja DITOLAK (400)', r.status === 400, 'status=' + r.status);
     r = await user.j('/api/tools', { name: 'OBENG PLUS' });
-    check('tambah tools oleh User BOLEH', r.status === 200 && r.json.tool && r.json.tool.id, JSON.stringify(r.json).slice(0, 150));
+    check('tambah tools oleh User DITOLAK (403)', r.status === 403, 'status=' + r.status);
+    r = await admin.j('/api/tools', { name: 'OBENG PLUS' });
+    check('tambah tools OBENG PLUS (Admin)', r.status === 200 && r.json.tool && r.json.tool.id, JSON.stringify(r.json).slice(0, 150));
     const toolB = r.json.tool.id;
     r = await admin.req('/api/tools');
     check('GET /api/tools: 2 tools', r.status === 200 && r.json.tools.length === 2, 'n=' + (r.json.tools && r.json.tools.length));
@@ -331,7 +333,7 @@ CREATE TABLE loans (id INTEGER PRIMARY KEY AUTOINCREMENT, tool_id INTEGER REFERE
     check('app.js: simpan pinjam kirim machine + tampil di baris history', r.text.includes("machine: $('#loan-machine').value") && r.text.includes('Mesin '));
     check('app.js: detail tampilkan foto bukti besar + semua field (mesin, tanggal, status)', r.text.includes('detail-photo') && r.text.includes('Dipakai di mesin') && r.text.includes('return-photo'));
     r = await admin.req('/sw.js');
-    check('sw.js: CACHE v15', r.text.includes('gudang-sparepart-v15'));
+    check('sw.js: CACHE v16', r.text.includes('gudang-sparepart-v16'));
   } finally {
     server.kill();
     await new Promise((r) => setTimeout(r, 500));

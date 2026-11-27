@@ -152,7 +152,7 @@ async function waitUp() {
     const appSrc = fs.readFileSync(__dirname + '/public/app.js', 'utf8');
     const htmlSrc = fs.readFileSync(__dirname + '/public/index.html', 'utf8');
     const swSrc = fs.readFileSync(__dirname + '/public/sw.js', 'utf8');
-    check('sw.js CACHE v15', swSrc.includes('gudang-sparepart-v15'));
+    check('sw.js CACHE v16', swSrc.includes('gudang-sparepart-v16'));
     check('index.html: tidak ada lagi inv-prev / inv-next / inv-page-info',
       !htmlSrc.includes('inv-prev') && !htmlSrc.includes('inv-next') && !htmlSrc.includes('inv-page-info'));
     check('index.html: sentinel + status + tombol Muat lebih ada (inv/take/hist)',

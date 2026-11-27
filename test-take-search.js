@@ -142,8 +142,10 @@ async function waitUp() {
       r.text.includes('if (code && code === lastTakeQuery && takeItem) return;')
       && r.text.indexOf('if (code && code === lastTakeQuery && takeItem) return;') < r.text.indexOf("$('#take-fields').classList.add('hidden')"));
     check('app.js: tidak ada lagi guard yang dicek setelah penyembunyian', !r.text.includes('if (code === lastTakeQuery) return;'));
-    check('app.js: saran dipilih juga lewat touchstart (HP) + click (fallback), idempotent',
-      r.text.includes("addEventListener('touchstart'") && r.text.includes('pickTakeSuggestion'));
+    check('app.js: saran dipilih lewat TAP (touchend), bukan touchstart langsung — scroll tidak memilih',
+      r.text.includes("addEventListener('touchend'") && r.text.includes('takeTap') && r.text.includes('TAP_MOVE_PX'));
+    check('app.js: lookupTake ditahan saat jari menyentuh saran (takeTap.active)',
+      r.text.includes('if (takeTap.active) return;'));
     check('app.js: pemilihan membatalkan pencarian live tertunda (takeLiveSeq++ di selectTakeItem)',
       r.text.includes('takeLiveSeq++;'));
     check('app.js: render ulang saran dilewati bila daftar sama persis (suggestSig)',
@@ -152,7 +154,7 @@ async function waitUp() {
       r.text.includes('sementara fetch jalan, barang mungkin sudah terpilih')
       && r.text.includes('jangan tampilkan saran bila barang sudah terpilih sementara itu'));
     r = await admin.req('/sw.js');
-    check('sw.js: CACHE v15', r.text.includes('gudang-sparepart-v15'));
+    check('sw.js: CACHE v16', r.text.includes('gudang-sparepart-v16'));
 
     console.log('== 8. Simulasi DOM: pencarian LIVE saat mengetik (jsdom) ==');
     if (!JSDOM) {
@@ -183,6 +185,18 @@ async function waitUp() {
         const inp = doc.querySelector('#take-code');
         inp.value = text;
         inp.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+      };
+      // simulasi sentuhan HP: touchstart/touchmove pakai touches, touchend pakai changedTouches
+      const touchEvent = (kind, x, y) => {
+        const ev = new dom.window.Event(kind, { bubbles: true, cancelable: true });
+        if (kind === 'touchend' || kind === 'touchcancel') { ev.touches = []; ev.changedTouches = [{ clientX: x, clientY: y }]; }
+        else { ev.touches = [{ clientX: x, clientY: y }]; ev.changedTouches = [{ clientX: x, clientY: y }]; }
+        return ev;
+      };
+      const tapBtn = async (btn, x, y) => {
+        btn.dispatchEvent(touchEvent('touchstart', x, y));
+        btn.dispatchEvent(touchEvent('touchend', x, y));
+        await sleep(200);
       };
       // tunggu boot(): status -> me -> enterApp -> dashboard
       let booted = false;
@@ -312,18 +326,26 @@ async function waitUp() {
         check('9b[' + i + '] preview tetap FD100099', doc.querySelector('#take-item').textContent.includes('FD100099'));
       }
 
-      // 9c. Ketukan sentuh HP (3x): touchstart lalu change
+      // 9c. Ketukan sentuh HP (3x): touchstart SAJA tidak memilih; tap
+      // (touchstart + touchend tanpa geser) yang memilih; change di tengah
+      // sentuhan ditahan sehingga saran tidak me-render ulang.
       for (let i = 1; i <= 3; i++) {
         await resetTake();
         await type('masker'); await sleep(600);
         const btnC = pickBtn('FD100099');
         check('9c[' + i + '] saran FD100099 ada', !!btnC);
-        btnC.dispatchEvent(new dom.window.Event('touchstart', { bubbles: true, cancelable: true }));
+        btnC.dispatchEvent(touchEvent('touchstart', 100, 200));
         await sleep(200);
-        check('9c[' + i + '] touchstart -> #take-fields tampil', !isHidden(doc.querySelector('#take-fields')));
+        check('9c[' + i + '] touchstart SAJA -> belum terpilih (#take-fields tetap tersembunyi)', isHidden(doc.querySelector('#take-fields')));
+        input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+        await sleep(200);
+        check('9c[' + i + '] change saat jari menyentuh -> saran TETAP tampil', !isHidden(sugBox()));
+        btnC.dispatchEvent(touchEvent('touchend', 100, 200));
+        await sleep(200);
+        check('9c[' + i + '] touchend (tap) -> #take-fields tampil', !isHidden(doc.querySelector('#take-fields')));
         input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
         await sleep(300);
-        check('9c[' + i + '] touchstart + change -> #take-fields TETAP tampil', !isHidden(doc.querySelector('#take-fields')));
+        check('9c[' + i + '] tap + change -> #take-fields TETAP tampil', !isHidden(doc.querySelector('#take-fields')));
       }
 
       // 9d. Pilih ulang setelah ganti query (3x)
@@ -345,6 +367,52 @@ async function waitUp() {
         await sleep(300);
         check('9d[' + i + '] change setelah pilih ulang -> #take-fields TETAP tampil', !isHidden(doc.querySelector('#take-fields')));
       }
+
+      console.log('== 10. Scroll melewati saran TIDAK boleh memilih (tap vs scroll) ==');
+      // Skenario persis laporan user: ketik "belt" -> saran muncul -> jari
+      // scroll melewati saran -> TIDAK ada yang terpilih.
+      const idBelt = (await admin.j('/api/items', { name: 'BELT V 123', fd_code: 'FD100100', barcode: '', stock: 50, unit: 'PCS', rack: 'RAK 9', shelf: 'Z.9', jolly_box: '1', category: 'UMUM' })).json.id;
+      check('setup seksi 10: BELT V 123 FD100100 stok 50', !!idBelt);
+      await resetTake();
+      await type('belt'); await sleep(600);
+      const btnScroll = [...sugBox().querySelectorAll('[data-take-suggest]')].find((b) => b.textContent.includes('FD100100'));
+      check('10 saran BELT FD100100 ada', !!btnScroll, 'saran=' + sugCount());
+      // jari menyentuh saran lalu bergeser 35px ke bawah (scroll) lalu lepas
+      btnScroll.dispatchEvent(touchEvent('touchstart', 100, 200));
+      btnScroll.dispatchEvent(touchEvent('touchmove', 100, 235));
+      await sleep(100);
+      btnScroll.dispatchEvent(touchEvent('touchend', 100, 235));
+      await sleep(200);
+      check('10 scroll (geser 35px) -> TIDAK terpilih, #take-fields tetap tersembunyi',
+        isHidden(doc.querySelector('#take-fields')) && isHidden(doc.querySelector('#take-item')));
+      check('10 scroll -> saran tetap tampil (bisa diketuk sesudahnya)', !isHidden(sugBox()));
+      // geser kecil 5px (dalam ambang 10px) tetap dianggap tap -> terpilih
+      btnScroll.dispatchEvent(touchEvent('touchstart', 100, 200));
+      btnScroll.dispatchEvent(touchEvent('touchmove', 100, 205));
+      btnScroll.dispatchEvent(touchEvent('touchend', 100, 205));
+      await sleep(200);
+      check('10 geser 5px (dalam ambang) -> tetap terpilih, #take-fields tampil', !isHidden(doc.querySelector('#take-fields')));
+      // geser tepat 10px (ambang, tidak >10) tetap tap
+      await resetTake();
+      await type('belt'); await sleep(600);
+      const btnEdge = [...sugBox().querySelectorAll('[data-take-suggest]')].find((b) => b.textContent.includes('FD100100'));
+      btnEdge.dispatchEvent(touchEvent('touchstart', 100, 200));
+      btnEdge.dispatchEvent(touchEvent('touchmove', 100, 210));
+      btnEdge.dispatchEvent(touchEvent('touchend', 100, 210));
+      await sleep(200);
+      check('10 geser tepat 10px (ambang) -> tetap terpilih', !isHidden(doc.querySelector('#take-fields')));
+      // geser 11px (lewat ambang) -> tidak terpilih
+      await resetTake();
+      await type('belt'); await sleep(600);
+      const btnOver = [...sugBox().querySelectorAll('[data-take-suggest]')].find((b) => b.textContent.includes('FD100100'));
+      btnOver.dispatchEvent(touchEvent('touchstart', 100, 200));
+      btnOver.dispatchEvent(touchEvent('touchmove', 100, 211));
+      btnOver.dispatchEvent(touchEvent('touchend', 100, 211));
+      await sleep(200);
+      check('10 geser 11px (lewat ambang) -> TIDAK terpilih', isHidden(doc.querySelector('#take-fields')));
+      // tap biasa sesudah scroll tetap memilih (pakai helper tapBtn)
+      await tapBtn(btnOver, 100, 200);
+      check('10 tap biasa sesudah scroll -> terpilih', !isHidden(doc.querySelector('#take-fields')));
     }
   } finally {
     server.kill();

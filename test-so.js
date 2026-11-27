@@ -297,9 +297,12 @@ async function waitUp() {
     check('app.js: pencarian live SO (liveSoSearch + soLiveSeq + debounce)', r.text.includes('liveSoSearch') && r.text.includes('soLiveSeq') && r.text.includes('setTimeout(liveSoSearch, 250)'));
     check('app.js: guard dipilih dicek SEBELUM sembunyikan (pelajaran bug Ambil)', r.text.includes("if (code === lastSoQuery && soItem) return;"));
     check('app.js: pilih saran batalkan live search tertunda (clearTimeout + soLiveSeq++)', r.text.includes('clearTimeout(soLiveTimer)') && r.text.includes('soLiveSeq++'));
-    check('app.js: pilih saran tahan tap sentuh (touchstart)', r.text.includes("addEventListener('touchstart'") && r.text.includes('selectSoItem'));
+    check('app.js: pilih saran SO lewat TAP (touchend), bukan touchstart langsung — scroll tidak memilih',
+      r.text.includes("addEventListener('touchend'") && r.text.includes('soTap') && r.text.includes('TAP_MOVE_PX'));
+    check('app.js: lookupSo ditahan saat jari menyentuh saran (soTap.active)',
+      r.text.includes('if (soTap.active) return;'));
     r = await admin.req('/sw.js');
-    check('sw.js: CACHE v15', r.text.includes("gudang-sparepart-v15"));
+    check('sw.js: CACHE v16', r.text.includes("gudang-sparepart-v16"));
     console.log('== 12. Label nav + pencarian LIVE di form SO (jsdom) ==');
     r = await admin.req('/');
     check('nav: tombol SO tertulis "📋 Stock Opname", data-view tetap so', r.text.includes('<button data-view="so">📋 Stock Opname</button>'));
@@ -345,6 +348,13 @@ async function waitUp() {
         const inp = doc.querySelector('#so-code');
         inp.value = text;
         inp.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+      };
+      // simulasi sentuhan HP: touchstart/touchmove pakai touches, touchend pakai changedTouches
+      const touchEvent = (kind, x, y) => {
+        const ev = new dom.window.Event(kind, { bubbles: true, cancelable: true });
+        if (kind === 'touchend' || kind === 'touchcancel') { ev.touches = []; ev.changedTouches = [{ clientX: x, clientY: y }]; }
+        else { ev.touches = [{ clientX: x, clientY: y }]; ev.changedTouches = [{ clientX: x, clientY: y }]; }
+        return ev;
       };
       // tunggu boot(): status -> me -> enterApp -> dashboard
       let booted = false;
@@ -405,21 +415,45 @@ async function waitUp() {
           !isHidden(doc.querySelector('#so-fields')) && !isHidden(doc.querySelector('#so-item')));
       }
 
-      // 12f. Pilih saran lewat touchstart (tap sentuh HP) -> field tampil
+      // 12f. Pilih saran lewat TAP sentuh HP (touchstart + touchend) -> field tampil;
+      // touchstart SAJA tidak memilih.
       await type('sarung'); await sleep(500);
       check('ketik "sarung" -> 1 saran', sugCount() === 1 && sugBox().textContent.includes('SARUNG SO'), 'saran=' + sugCount());
       const btnS = sugBox().querySelector('[data-so-suggest]');
-      btnS.dispatchEvent(new dom.window.Event('touchstart', { bubbles: true, cancelable: true }));
+      btnS.dispatchEvent(touchEvent('touchstart', 100, 200));
       await sleep(200);
-      check('pilih saran via touchstart -> #so-fields tampil + preview SARUNG SO',
+      check('touchstart SAJA -> belum terpilih (#so-fields tetap tersembunyi)', isHidden(doc.querySelector('#so-fields')));
+      btnS.dispatchEvent(touchEvent('touchend', 100, 200));
+      await sleep(200);
+      check('pilih saran via tap (touchstart+touchend) -> #so-fields tampil + preview SARUNG SO',
         !isHidden(doc.querySelector('#so-fields')) && doc.querySelector('#so-item').textContent.includes('SARUNG SO'));
       input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
       await sleep(200);
-      check('setelah pilih via touchstart + change -> #so-fields TETAP tampil', !isHidden(doc.querySelector('#so-fields')));
+      check('setelah pilih via tap + change -> #so-fields TETAP tampil', !isHidden(doc.querySelector('#so-fields')));
+
+      // 12f2. Scroll melewati saran SO TIDAK boleh memilih (tap vs scroll)
+      await type('masker'); await sleep(500);
+      check('ketik "masker" -> 2 saran', sugCount() === 2, 'saran=' + sugCount());
+      const btnScroll = [...sugBox().querySelectorAll('[data-so-suggest]')].find((b) => b.textContent.includes('FD100101'));
+      check('saran FD100101 ada', !!btnScroll);
+      btnScroll.dispatchEvent(touchEvent('touchstart', 100, 200));
+      btnScroll.dispatchEvent(touchEvent('touchmove', 100, 240));
+      await sleep(100);
+      btnScroll.dispatchEvent(touchEvent('touchend', 100, 240));
+      await sleep(200);
+      check('scroll SO (geser 40px) -> TIDAK terpilih, #so-fields tetap tersembunyi',
+        isHidden(doc.querySelector('#so-fields')) && isHidden(doc.querySelector('#so-item')));
+      check('scroll SO -> saran tetap tampil', !isHidden(sugBox()));
+      btnScroll.dispatchEvent(touchEvent('touchstart', 100, 200));
+      btnScroll.dispatchEvent(touchEvent('touchend', 100, 200));
+      await sleep(200);
+      check('tap biasa sesudah scroll SO -> terpilih', !isHidden(doc.querySelector('#so-fields')));
 
       // 12g. Query berubah setelah terpilih -> field hilang, pilih saran baru -> tampil lagi
+      // (input saat ini "masker" dgn pilihan MASKER dari 12f2 — lewati "sarung" dulu supaya query benar-benar berubah)
+      await type('sarung'); await sleep(500);
+      check('ganti query ke "sarung" -> pilihan lama dibersihkan, #so-fields hilang', isHidden(doc.querySelector('#so-fields')) && isHidden(doc.querySelector('#so-item')));
       await type('masker'); await sleep(500);
-      check('ganti query ke "masker" -> pilihan lama dibersihkan, #so-fields hilang', isHidden(doc.querySelector('#so-fields')) && isHidden(doc.querySelector('#so-item')));
       check('ganti query ke "masker" -> saran baru muncul (2)', sugCount() === 2, 'saran=' + sugCount());
       const btnM = [...sugBox().querySelectorAll('[data-so-suggest]')].find((b) => b.textContent.includes('FD100101'));
       btnM.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));

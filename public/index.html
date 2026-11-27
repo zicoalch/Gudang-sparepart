@@ -287,7 +287,7 @@
       <div class="card form">
         <h3>🔧 Daftar Tools</h3>
         <p class="muted small">Tools diinput manual berdasarkan nama saja — tanpa kode. Pilih dari daftar saat meminjam.</p>
-        <span class="input-row">
+        <span class="input-row" id="tool-add-row">
           <input id="tool-name" placeholder="Nama tools baru, mis. Kunci Pas 14" autocomplete="off">
           <button type="button" class="btn btn-primary" id="btn-add-tool">➕ Tambah Tools</button>
         </span>
@@ -504,6 +504,7 @@
       <div class="card">
         <p>Login sebagai <b id="acc-name">—</b> — peran: <b id="acc-role">—</b></p>
         <p class="muted small" id="acc-desc"></p>
+        <p class="muted small hidden" id="acc-pw-hint">Lupa password? Minta Admin untuk meresetnya.</p>
         <p>
           <button class="btn" id="btn-change-pw">🔑 Ganti password saya</button>
           <button class="btn" id="btn-logout">🚪 Logout</button>

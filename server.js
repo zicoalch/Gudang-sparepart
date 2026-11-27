@@ -313,8 +313,9 @@ app.post('/api/logout', requireAuth, (req, res) => {
 
 app.get('/api/me', requireAuth, (req, res) => ok(res, { username: req.account.username, role: req.account.role }));
 
-// ganti password sendiri
-app.post('/api/change-password', requireAuth, (req, res) => {
+// ganti password sendiri — Admin saja (User tidak bisa ganti password
+// sendiri; bila lupa, minta Admin mereset dari menu Akun Admin)
+app.post('/api/change-password', requireAuth, requireAdmin, (req, res) => {
   const oldPw = String(req.body.oldPassword || '');
   const newPw = String(req.body.newPassword || '');
   if (newPw.length < 4) return fail(res, 400, 'Password baru minimal 4 karakter.');
@@ -763,7 +764,7 @@ app.get('/api/tools', requireAuth, (req, res) => {
   ok(res, { tools: rows.map((t) => ({ id: t.id, name: t.name, created_at: t.created_at, created_by: t.created_by || '' })) });
 });
 
-app.post('/api/tools', requireAuth, (req, res) => {
+app.post('/api/tools', requireAuth, requireAdmin, (req, res) => {
   const name = upperName(req.body.name);
   if (!name) return fail(res, 400, 'Nama tools wajib diisi.');
   const dup = db.prepare('SELECT id FROM tools WHERE name = ? COLLATE NOCASE').get(name);

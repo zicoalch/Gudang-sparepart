@@ -160,6 +160,11 @@ function enterApp(me) {
   $$('#topnav button[data-view="history"]').forEach((b) => { b.style.display = IS_ADMIN ? '' : 'none'; });
   $$('#topnav button[data-view="supplier"]').forEach((b) => { b.style.display = IS_ADMIN ? '' : 'none'; });
   $('#btn-print-qr').style.display = IS_ADMIN ? '' : 'none';
+  $('#tool-add-row').style.display = IS_ADMIN ? '' : 'none';
+  // ganti password sendiri hanya Admin — atur sejak login (loadAccount
+  // mengulanginya saat menu Akun dibuka)
+  $('#btn-change-pw').style.display = IS_ADMIN ? '' : 'none';
+  $('#acc-pw-hint').classList.toggle('hidden', IS_ADMIN);
   $('#dash-out-section').style.display = IS_ADMIN ? '' : 'none';
   $('#dash-date-row').style.display = IS_ADMIN ? '' : 'none';
   $('#dash-date').value = localDate();
@@ -797,6 +802,49 @@ function selectTakeItem(item) {
   $('#take-fields').classList.remove('hidden');
   $('#take-qty').focus();
 }
+// ---------- deteksi TAP vs SCROLL pada saran (HP) ----------
+// Bug: pemilihan saran diikat ke touchstart — begitu jari menyentuh saran
+// saat SCROLL, saran langsung terpilih. Sekarang touchstart hanya mencatat
+// posisi; touchend memilih HANYA bila jari nyaris tidak bergeser (<=10px).
+// Selama jari menyentuh saran, lookup (blur/change) DITAHAN lewat flag
+// active supaya daftar tidak me-render ulang di tengah ketukan (pengganti
+// preventDefault di touchstart, yang justru memblokir scroll).
+const TAP_MOVE_PX = 10;
+function makeTapTracker() {
+  let start = null;
+  let payload = null;
+  let guardTimer = null;
+  const pos = (e) => (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || null;
+  return {
+    get active() { return !!start; },
+    start(e, p) {
+      const t = pos(e);
+      start = t ? { x: t.clientX, y: t.clientY, moved: false } : { x: 0, y: 0, moved: false };
+      payload = p;
+      clearTimeout(guardTimer);
+      // pengaman: jangan kunci lookup selamanya bila touchend tidak datang
+      guardTimer = setTimeout(() => { start = null; payload = null; }, 2000);
+    },
+    move(e) {
+      if (!start) return;
+      const t = pos(e);
+      if (t && (Math.abs(t.clientX - start.x) > TAP_MOVE_PX || Math.abs(t.clientY - start.y) > TAP_MOVE_PX)) start.moved = true;
+    },
+    end(e) {
+      if (!start) return null;
+      const p = payload;
+      const wasTap = !start.moved;
+      start = null; payload = null;
+      clearTimeout(guardTimer);
+      if (wasTap) { if (e.cancelable) e.preventDefault(); return p; }
+      return null;
+    },
+    cancel() { start = null; payload = null; clearTimeout(guardTimer); },
+  };
+}
+const takeTap = makeTapTracker();
+const soTap = makeTapTracker();
+
 // Pemilihan saran harus idempotent: di HP, satu ketukan bisa memicu
 // touchstart + mousedown + click sekaligus; ketukan kedua untuk barang yang
 // sama (yang sudah terpilih) tidak boleh mengulang apa pun.
@@ -819,17 +867,21 @@ function renderTakeSuggestions(items) {
     + '<span class="r-name">' + esc(it.name) + '</span>'
     + '<div class="r-sub">' + esc(it.fd_code || it.barcode || '') + ' • Rak ' + esc(it.rack || '-') + ' • Shaf ' + esc(it.shelf || '-') + ' • Box ' + esc(it.jolly_box || '-') + '</div></button>').join('');
   box.classList.remove('hidden');
-  // touchstart (HP) + mousedown (desktop) + click (fallback keyboard):
-  // ketiganya memanggil pick yang sama dan idempotent. preventDefault di
-  // touchstart/mousedown mencegah input kehilangan fokus sebelum pemilihan
-  // jalan (di HP, blur bisa memicu change -> lookupTake).
+  // TAP (bukan touchstart) yang memilih: touchstart hanya mencatat posisi,
+  // touchend memilih bila jari tidak bergeser (<=10px); geser = scroll,
+  // abaikan. mousedown (desktop, scroll pakai roda) + click (keyboard)
+  // tetap memilih langsung seperti dulu; ketiganya idempotent.
   box.querySelectorAll('[data-take-suggest]').forEach((b) => {
+    const findIt = () => shown.find((x) => x.id === +b.dataset.takeSuggest);
     const pick = (e) => {
       e.preventDefault();
-      const it = shown.find((x) => x.id === +b.dataset.takeSuggest);
+      const it = findIt();
       if (it) pickTakeSuggestion(it);
     };
-    b.addEventListener('touchstart', pick, { passive: false });
+    b.addEventListener('touchstart', (e) => { const it = findIt(); if (it) takeTap.start(e, it); }, { passive: true });
+    b.addEventListener('touchmove', (e) => takeTap.move(e), { passive: true });
+    b.addEventListener('touchend', (e) => { const it = takeTap.end(e); if (it) pickTakeSuggestion(it); });
+    b.addEventListener('touchcancel', () => takeTap.cancel());
     b.addEventListener('mousedown', pick);
     b.addEventListener('click', pick);
   });
@@ -837,6 +889,10 @@ function renderTakeSuggestions(items) {
 async function lookupTake() {
   const code = $('#take-code').value.trim();
   const errEl = $('#take-error');
+  // Jari sedang menyentuh saran (tap/scroll): jangan sentuh state apa pun
+  // dulu — blur/change dari sentuhan itu tidak boleh me-render ulang daftar
+  // di tengah ketukan; pemilihan (atau pengabaian) diputuskan di touchend.
+  if (takeTap.active) return;
   // PENTING: guard ini HARUS dicek SEBELUM penyembunyian apa pun. Barang yang
   // sudah terpilih untuk teks ini (mis. lewat ketuk saran) tidak boleh
   // dihapus oleh Enter/blur susulan — dulu guard dicek setelah field
@@ -896,9 +952,12 @@ async function liveTakeSearch() {
   // teks ini sudah dicari live: jangan fetch ulang
   if (q === lastLiveQuery) return;
   // query berubah dari barang yang tadi terpilih: bersihkan pilihan lama
-  // (pilih saran baru akan menampilkan field lagi via selectTakeItem)
+  // (pilih saran baru akan menampilkan field lagi via selectTakeItem).
+  // lastTakeQuery ikut direset — kalau tidak, ketik kembali teks yang sama
+  // dengan pilihan lama langsung return tanpa fetch dan saran jadi basi.
   if (takeItem) {
     takeItem = null;
+    lastTakeQuery = '';
     $('#take-item').classList.add('hidden');
     $('#take-fields').classList.add('hidden');
   }
@@ -1050,7 +1109,7 @@ async function loadTools() {
     tools = r.tools || [];
     if (selectedTool) selectedTool = tools.find((t) => t.id === selectedTool.id) || null;
     const box = $('#tool-list');
-    box.innerHTML = tools.length ? tools.map(toolRowHtml).join('') : '<p class="muted">Belum ada tools. Tambahkan dulu di atas.</p>';
+    box.innerHTML = tools.length ? tools.map(toolRowHtml).join('') : '<p class="muted">' + (IS_ADMIN ? 'Belum ada tools. Tambahkan dulu di atas.' : 'Belum ada tools. Minta Admin untuk menambahkan tools.') + '</p>';
     box.querySelectorAll('[data-del-tool]').forEach((b) => b.addEventListener('click', async () => {
       if (!confirm('Hapus tools "' + b.dataset.name + '"?')) return;
       try { await apiJSON('/api/tools/' + b.dataset.delTool, undefined, 'DELETE'); toast('Tools dihapus.'); loadTools(); }
@@ -1063,7 +1122,7 @@ function renderLoanToolList() {
   const box = $('#loan-tool-list');
   const q = loanToolQuery.trim().toLowerCase();
   const list = tools.filter((t) => !q || t.name.toLowerCase().includes(q));
-  if (!list.length) { box.innerHTML = '<p class="muted">' + (tools.length ? 'Tidak ada tools yang cocok.' : 'Belum ada tools. Tambahkan dulu di atas.') + '</p>'; return; }
+  if (!list.length) { box.innerHTML = '<p class="muted">' + (tools.length ? 'Tidak ada tools yang cocok.' : (IS_ADMIN ? 'Belum ada tools. Tambahkan dulu di atas.' : 'Belum ada tools. Minta Admin untuk menambahkan tools.')) + '</p>'; return; }
   box.innerHTML = list.map((t) => '<button class="row' + (selectedTool && selectedTool.id === t.id ? ' selected' : '') + '" data-tool="' + t.id + '"><span class="r-name">🔧 ' + esc(t.name) + '</span></button>').join('');
   box.querySelectorAll('[data-tool]').forEach((b) => b.addEventListener('click', () => selectTool(+b.dataset.tool)));
 }
@@ -1526,19 +1585,16 @@ function renderSoSuggestions(items) {
     + '<span class="r-name">' + esc(it.name) + '</span>'
     + '<div class="r-sub">' + esc(it.fd_code || it.barcode || '') + ' • Rak ' + esc(it.rack || '-') + ' • Shaf ' + esc(it.shelf || '-') + ' • Box ' + esc(it.jolly_box || '-') + '</div></button>').join('');
   box.classList.remove('hidden');
-  // mousedown + touchstart (bukan click) + preventDefault: pemilihan jalan
-  // sebelum input kehilangan fokus, jadi daftar saran tidak sempat
-  // di-render ulang oleh event change lalu menghilangkan tombol yang
-  // sedang diketuk. touchstart penting di HP: tap sentuh tidak selalu
-  // menghasilkan mousedown yang tepat waktu.
-  const pick = (b) => (e) => {
-    e.preventDefault();
-    const it = shown.find((x) => x.id === +b.dataset.soSuggest);
-    if (it) selectSoItem(it);
-  };
+  // Sama seperti saran Ambil: TAP yang memilih (touchstart catat posisi,
+  // touchend memilih bila jari tidak bergeser <=10px); mousedown + click
+  // tetap memilih langsung.
   box.querySelectorAll('[data-so-suggest]').forEach((b) => {
-    b.addEventListener('mousedown', pick(b));
-    b.addEventListener('touchstart', pick(b), { passive: false });
+    const findIt = () => shown.find((x) => x.id === +b.dataset.soSuggest);
+    b.addEventListener('touchstart', (e) => { const it = findIt(); if (it) soTap.start(e, it); }, { passive: true });
+    b.addEventListener('touchmove', (e) => soTap.move(e), { passive: true });
+    b.addEventListener('touchend', (e) => { const it = soTap.end(e); if (it) selectSoItem(it); });
+    b.addEventListener('touchcancel', () => soTap.cancel());
+    b.addEventListener('mousedown', (e) => { e.preventDefault(); const it = findIt(); if (it) selectSoItem(it); });
   });
 }
 async function liveSoSearch() {
@@ -1559,9 +1615,12 @@ async function liveSoSearch() {
   // teks ini sudah dicari live: jangan fetch ulang
   if (q === lastSoLiveQuery) return;
   // query berubah dari barang yang tadi terpilih: bersihkan pilihan lama
-  // (pilih saran baru akan menampilkan field lagi via selectSoItem)
+  // (pilih saran baru akan menampilkan field lagi via selectSoItem).
+  // lastSoQuery ikut direset — kalau tidak, ketik kembali teks yang sama
+  // dengan pilihan lama langsung return tanpa fetch dan saran jadi basi.
   if (soItem) {
     soItem = null;
+    lastSoQuery = '';
     $('#so-item').classList.add('hidden');
     $('#so-fields').classList.add('hidden');
   }
@@ -1579,6 +1638,8 @@ async function liveSoSearch() {
 async function lookupSo() {
   const code = $('#so-code').value.trim();
   const errEl = $('#so-error');
+  // Jari sedang menyentuh saran (tap/scroll): jangan sentuh state dulu.
+  if (soTap.active) return;
   // GUARD DULU, sebelum menyembunyikan/mengubah apa pun: teks sama dengan
   // yang terakhir dipilih dan barang masih terpilih -> jangan sentuh state.
   // Ini yang membedakan dari bug Ambil (hide dulu, guard belakangan).
@@ -1821,6 +1882,10 @@ async function loadAccount() {
   $('#acc-desc').textContent = IS_ADMIN
     ? 'Akses penuh — tambah, ubah & hapus sparepart, atur stok, impor Excel, kelola peminjaman tools, dan kelola akun User.'
     : 'Hanya melihat stok, mencari, mencatat pengambilan, dan meminjam tools. Tidak bisa tambah, ubah, hapus, atau impor.';
+  // Ganti password sendiri hanya untuk Admin; User minta Admin mereset.
+  $('#btn-change-pw').style.display = IS_ADMIN ? '' : 'none';
+  $('#acc-pw-hint').classList.toggle('hidden', IS_ADMIN);
+  if (!IS_ADMIN) $('#pw-box').classList.add('hidden');
   $('#admin-users-card').classList.toggle('hidden', !IS_ADMIN);
   if (IS_ADMIN) loadUsers();
   if (!deferredPrompt) $('#install-guide').classList.remove('hidden');

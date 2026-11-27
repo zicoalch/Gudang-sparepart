@@ -220,7 +220,7 @@ async function stockOf(admin, id) {
     check('app.js memuat tombol Hapus catatan + Ubah + Simpan perubahan', r.text.includes('btn-del-take') && r.text.includes('btn-edit-take') && r.text.includes('btn-save-take-edit'));
     check('app.js: baris recent memakai data-take (id moves, bukan id barang)', r.text.includes('data-take='));
     r = await admin.req('/sw.js');
-    check('sw.js CACHE v15', r.status === 200 && r.text.includes('gudang-sparepart-v15'), r.text.slice(0, 200));
+    check('sw.js CACHE v16', r.status === 200 && r.text.includes('gudang-sparepart-v16'), r.text.slice(0, 200));
     const serverSrc = fs.readFileSync('server.js', 'utf8');
     check('server.js memuat DELETE /api/takes/:id + PUT /api/takes/:id', serverSrc.includes("app.delete('/api/takes/:id'") && serverSrc.includes("app.put('/api/takes/:id'"));
     check('server.js: hapus/edit memakai id moves (WHERE id = ?), bukan item_id', serverSrc.includes('DELETE FROM moves WHERE id = ?'));
