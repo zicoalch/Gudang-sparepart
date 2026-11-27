@@ -59,6 +59,7 @@
         <button data-view="dashboard" class="active">▦ Dashboard</button>
         <button data-view="inventory">🗂 Inventaris</button>
         <button data-view="take">📤 Ambil</button>
+        <button data-view="loan">🤝 Pinjam</button>
         <button data-view="so">📋 SO</button>
         <button data-view="history">🕘 Riwayat</button>
         <button data-view="account">👤 Akun</button>
@@ -78,6 +79,8 @@
         <div class="stat"><b id="st-out">0</b><span>Stok habis</span></div>
       </div>
       <p class="muted small">🗄 <span id="st-racks">0</span> rak terpakai &nbsp;•&nbsp; 📦 <span id="st-boxes">0</span> jolly box terpakai</p>
+
+      <div id="dash-loan-alert" class="warn-box hidden" style="cursor:pointer" role="button" tabindex="0"></div>
 
       <div class="date-row" id="dash-date-row">
         <label for="dash-date">Tanggal</label>
@@ -270,6 +273,66 @@
       <div id="take-recent" class="list"></div>
     </section>
 
+    <!-- PEMINJAMAN TOOLS -->
+    <section id="view-loan" class="view hidden">
+      <h2>🤝 Peminjaman Tools</h2>
+      <p class="muted">Pinjam tools maksimal <b>2 hari</b> — setelah itu diingatkan sampai dikembalikan. Foto bukti pengembalian wajib.</p>
+
+      <div id="loan-alert" class="warn-box hidden"></div>
+
+      <div class="card form">
+        <label>Kode FD / Barcode
+          <span class="input-row">
+            <input id="loan-code" placeholder="Ketik kode FD / barcode lalu Enter" autocomplete="off">
+            <button type="button" class="btn btn-primary" id="btn-scan-loan">📷 Scan</button>
+          </span>
+        </label>
+        <div id="loan-item" class="hidden"></div>
+        <div id="loan-fields" class="hidden">
+          <div class="grid2">
+            <label>Jumlah (pcs) *
+              <input id="loan-qty" type="number" min="1" value="1" required>
+            </label>
+            <label>Dipinjam oleh *
+              <input id="loan-borrower" placeholder="Nama orang yang meminjam" autocomplete="off">
+            </label>
+          </div>
+          <button class="btn btn-primary btn-block" id="btn-save-loan">💾 Simpan peminjaman</button>
+        </div>
+        <p id="loan-error" class="error hidden"></p>
+      </div>
+
+      <div id="return-box" class="card form hidden">
+        <h3>✅ Kembalikan — <span id="return-loan-name"></span></h3>
+        <div class="photo-box">
+          <img id="return-photo-preview" class="hidden" alt="Foto bukti pengembalian">
+          <div class="photo-actions">
+            <label class="btn">📷 Foto bukti <input type="file" id="return-photo-camera" accept="image/*" capture="environment" class="hidden"></label>
+            <label class="btn">🖼 Dari galeri <input type="file" id="return-photo-gallery" accept="image/*" class="hidden"></label>
+            <button type="button" class="btn hidden" id="btn-return-photo-remove">Hapus foto</button>
+          </div>
+          <p class="muted small">Foto bukti wajib — tombol simpan aktif setelah foto dipilih. Foto dikecilkan otomatis (maks 1024px, ~500 KB).</p>
+          <p id="return-photo-error" class="error hidden"></p>
+        </div>
+        <button class="btn btn-primary btn-block" id="btn-save-return" disabled>💾 Simpan pengembalian</button>
+        <button class="btn btn-block" id="btn-cancel-return">Batal</button>
+      </div>
+
+      <h3>Pinjaman aktif</h3>
+      <div id="loan-active" class="list"></div>
+
+      <h3>History peminjaman</h3>
+      <div class="toolbar">
+        <select id="loan-filter">
+          <option value="all">Semua</option>
+          <option value="dipinjam">Dipinjam</option>
+          <option value="dikembalikan">Dikembalikan</option>
+          <option value="terlambat">Terlambat</option>
+        </select>
+      </div>
+      <div id="loan-list" class="list"></div>
+    </section>
+
     <!-- STOCK OPNAME -->
     <section id="view-so" class="view hidden">
       <h2>📋 Stock Opname (SO)</h2>
@@ -347,7 +410,7 @@
 
       <div class="card hidden" id="admin-users-card">
         <h3>Akun User</h3>
-        <p class="muted small">Buat akun untuk teman/tim yang memakai aplikasi ini. Mereka login dengan akun User — hanya bisa melihat stok, mencari, dan mencatat pengambilan.</p>
+        <p class="muted small">Buat akun untuk teman/tim yang memakai aplikasi ini. Mereka login dengan akun User — hanya bisa melihat stok, mencari, mencatat pengambilan, dan meminjam tools.</p>
         <div class="grid2">
           <label>Username baru <input id="new-user-name" placeholder="contoh: budi" autocomplete="off"></label>
           <label>Password <input id="new-user-pw" type="password" placeholder="Minimal 4 karakter" autocomplete="new-password"></label>

@@ -80,6 +80,7 @@ function showView(name) {
   if (name === 'dashboard') loadDashboard();
   if (name === 'inventory') loadInventory();
   if (name === 'take') loadTakeRecent();
+  if (name === 'loan') loadLoans();
   if (name === 'so') loadSo();
   if (name === 'history') loadHistory();
   if (name === 'account') loadAccount();
@@ -180,8 +181,23 @@ async function loadDashboard() {
     $('#st-racks').textContent = fmt(s.racks);
     $('#st-boxes').textContent = fmt(s.boxes);
   } catch (e) { /* diam */ }
+  loadLoanAlert();
   if (IS_ADMIN) loadOutHistory();
 }
+// Kartu peringatan peminjaman terlambat — terlihat untuk Admin DAN User
+async function loadLoanAlert() {
+  const box = $('#dash-loan-alert');
+  box.classList.add('hidden');
+  try {
+    const r = await api('/api/loans?status=terlambat');
+    if (!r.overdueCount) return;
+    const lines = r.loans.slice(0, 3).map((l) => esc(l.item_name) + ' — ' + esc(l.borrower) + ' (terlambat ' + fmt(l.overdue_days) + ' hari)').join('<br>');
+    const more = r.overdueCount > 3 ? '<br>+' + fmt(r.overdueCount - 3) + ' lagi…' : '';
+    box.innerHTML = '⚠️ Ada <b>' + fmt(r.overdueCount) + ' peminjaman</b> sudah lewat 2 hari belum dikembalikan.<br>' + lines + more + '<br><span class="muted small">Ketuk untuk melihat →</span>';
+    box.classList.remove('hidden');
+  } catch (e) { /* diam */ }
+}
+$('#dash-loan-alert').addEventListener('click', () => showView('loan'));
 async function loadOutHistory() {
   const date = $('#dash-date').value || localDate();
   $('#out-date-label').textContent = fmtDateID(date);
@@ -544,7 +560,7 @@ async function openDetail(id, back) {
   } catch (e) { box.innerHTML = '<p class="error">' + esc(e.message) + '</p>'; }
 }
 $('#btn-back-detail').addEventListener('click', () => {
-  const back = ['dashboard', 'inventory', 'take', 'history', 'photo-search'].includes(detailBack) ? detailBack : 'inventory';
+  const back = ['dashboard', 'inventory', 'take', 'loan', 'history', 'photo-search'].includes(detailBack) ? detailBack : 'inventory';
   showView(back);
 });
 function fillEditForm(it) {
@@ -696,6 +712,186 @@ async function loadTakeRecent() {
     list.querySelectorAll('[data-item]').forEach((b) => b.addEventListener('click', () => openDetail(+b.dataset.item, 'take')));
   } catch (e) { /* diam */ }
 }
+
+// tanggal+jam ISO (UTC) -> tanggal lokal id-ID, cth: 27/11/2026 14:05
+function fmtDateTimeLocal(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return fmtDateID(localDate(d)) + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+// ---------- peminjaman tools ----------
+let loanItem = null;
+let loanFilter = 'all';
+let returnLoanId = null;
+let returnPhotoData = '';
+
+function loanBadge(l) {
+  if (l.status === 'dikembalikan') return '<span class="badge green">✅ Dikembalikan</span>';
+  if (l.overdue) return '<span class="badge red">⚠️ Terlambat' + (l.overdue_days >= 1 ? ' ' + fmt(l.overdue_days) + ' hari' : '') + '</span>';
+  return '<span class="badge">Dipinjam</span>';
+}
+function loanRowHtml(l, withReturnBtn) {
+  let sub = esc(l.fd_code || '') + ' • Dipinjam ' + fmtDateTimeLocal(l.borrowed_at) + ' • Jatuh tempo ' + fmtDateTimeLocal(l.due_at) + ' • Oleh ' + esc(l.borrowed_by || '-');
+  if (l.status === 'dikembalikan') {
+    sub += '<br>Dikembalikan ' + fmtDateTimeLocal(l.returned_at) + ' • Oleh ' + esc(l.returned_by || '-');
+  }
+  let photoHtml = '';
+  if (l.status === 'dikembalikan' && l.hasReturnPhoto) {
+    photoHtml = '<a href="/api/loans/' + l.id + '/return-photo" target="_blank" rel="noopener"><img class="thumb" src="/api/loans/' + l.id + '/return-photo" alt="Bukti pengembalian" loading="lazy"></a>';
+  }
+  const btn = withReturnBtn && l.status === 'dipinjam'
+    ? ' <button class="btn btn-small btn-primary" data-return="' + l.id + '" data-name="' + esc(l.item_name) + '">✅ Kembalikan</button>' : '';
+  return '<div class="row" data-item="' + l.item_id + '">' + photoHtml
+    + '<span class="r-stock">−' + fmt(l.qty) + '</span>'
+    + '<span class="r-name">' + esc(l.item_name) + ' ' + loanBadge(l) + '</span>'
+    + '<div class="r-sub">' + esc(l.borrower) + ' • ' + sub + btn + '</div></div>';
+}
+function bindLoanRows(box) {
+  box.querySelectorAll('[data-item]').forEach((el) => el.addEventListener('click', (e) => {
+    if (e.target.closest('[data-return]') || e.target.closest('a')) return;
+    openDetail(+el.dataset.item, 'loan');
+  }));
+  box.querySelectorAll('[data-return]').forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openReturn(+b.dataset.return, b.dataset.name);
+  }));
+}
+
+async function lookupLoan() {
+  const code = $('#loan-code').value.trim();
+  const errEl = $('#loan-error');
+  errEl.classList.add('hidden');
+  $('#loan-item').classList.add('hidden');
+  $('#loan-fields').classList.add('hidden');
+  loanItem = null;
+  if (!code) return;
+  try {
+    const r = await api('/api/items/lookup?code=' + encodeURIComponent(code));
+    loanItem = r.item;
+    $('#loan-item').innerHTML = '<div class="row"><span class="r-stock">' + fmt(r.item.stock) + ' <small>' + esc(r.item.unit) + '</small></span>'
+      + '<span class="r-name">' + esc(r.item.name) + '</span>'
+      + '<div class="r-sub">' + esc(r.item.fd_code || '') + ' • Rak ' + esc(r.item.rack || '-') + ' • Shaf ' + esc(r.item.shelf || '-') + ' • Box ' + esc(r.item.jolly_box || '-') + '</div></div>';
+    $('#loan-item').classList.remove('hidden');
+    $('#loan-fields').classList.remove('hidden');
+    $('#loan-qty').focus();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+  }
+}
+$('#loan-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); lookupLoan(); } });
+$('#loan-code').addEventListener('change', lookupLoan);
+$('#btn-save-loan').addEventListener('click', async () => {
+  if (!loanItem) { toast('Pilih barang dulu (ketik Kode FD / barcode).'); return; }
+  const btn = $('#btn-save-loan');
+  btn.disabled = true;
+  try {
+    const r = await apiJSON('/api/loans', { itemId: loanItem.id, qty: $('#loan-qty').value, borrower: $('#loan-borrower').value });
+    toast('Peminjaman tersimpan. Stok "' + r.loan.item_name + '" sisa ' + fmt(r.balance) + '. Jatuh tempo ' + fmtDateTimeLocal(r.loan.due_at) + '.');
+    $('#loan-code').value = ''; $('#loan-qty').value = '1'; $('#loan-borrower').value = '';
+    $('#loan-item').classList.add('hidden'); $('#loan-fields').classList.add('hidden');
+    loanItem = null;
+    loadLoans();
+    loadLoanAlert();
+  } catch (e) { toast(e.message); }
+  btn.disabled = false;
+});
+
+async function loadLoans() {
+  const alertBox = $('#loan-alert');
+  alertBox.classList.add('hidden');
+  try {
+    const r = await api('/api/loans?status=terlambat');
+    if (r.overdueCount) {
+      const lines = r.loans.map((l) => esc(l.item_name) + ' — ' + esc(l.borrower) + ' • terlambat ' + fmt(l.overdue_days) + ' hari (jatuh tempo ' + fmtDateTimeLocal(l.due_at) + ')').join('<br>');
+      alertBox.innerHTML = '⚠️ Ada <b>' + fmt(r.overdueCount) + ' peminjaman</b> sudah lewat 2 hari belum dikembalikan:<br>' + lines;
+      alertBox.classList.remove('hidden');
+    }
+  } catch (e) { /* diam */ }
+  const activeBox = $('#loan-active');
+  activeBox.innerHTML = '<p class="muted">Memuat…</p>';
+  try {
+    const r = await api('/api/loans?status=dipinjam');
+    if (!r.loans.length) { activeBox.innerHTML = '<p class="muted">Tidak ada pinjaman aktif.</p>'; }
+    else {
+      activeBox.innerHTML = r.loans.map((l) => loanRowHtml(l, true)).join('');
+      bindLoanRows(activeBox);
+    }
+  } catch (e) { activeBox.innerHTML = '<p class="error">' + esc(e.message) + '</p>'; }
+  loadLoanHistory();
+}
+async function loadLoanHistory() {
+  const box = $('#loan-list');
+  box.innerHTML = '<p class="muted">Memuat…</p>';
+  try {
+    const r = await api('/api/loans?status=' + loanFilter);
+    if (!r.loans.length) { box.innerHTML = '<p class="muted">Belum ada peminjaman.</p>'; return; }
+    box.innerHTML = r.loans.map((l) => loanRowHtml(l, false)).join('');
+    bindLoanRows(box);
+  } catch (e) { box.innerHTML = '<p class="error">' + esc(e.message) + '</p>'; }
+}
+$('#loan-filter').addEventListener('change', (e) => { loanFilter = e.target.value; loadLoanHistory(); });
+
+function openReturn(loanId, name) {
+  returnLoanId = loanId;
+  returnPhotoData = '';
+  $('#return-loan-name').textContent = name;
+  $('#return-photo-preview').classList.add('hidden');
+  $('#return-photo-preview').src = '';
+  $('#btn-return-photo-remove').classList.add('hidden');
+  $('#return-photo-error').classList.add('hidden');
+  $('#btn-save-return').disabled = true;
+  $('#return-box').classList.remove('hidden');
+  $('#return-box').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+$('#btn-cancel-return').addEventListener('click', () => {
+  returnLoanId = null; returnPhotoData = '';
+  $('#return-box').classList.add('hidden');
+});
+async function handleReturnPhotoFile(file) {
+  const errEl = $('#return-photo-error');
+  errEl.classList.add('hidden');
+  $('#btn-save-return').disabled = true;
+  returnPhotoData = '';
+  if (!file) return;
+  if (!file.type.startsWith('image/')) { errEl.textContent = 'File harus berupa gambar.'; errEl.classList.remove('hidden'); return; }
+  try {
+    const dataUrl = await downscaleImage(file);
+    returnPhotoData = dataUrl;
+    const img = $('#return-photo-preview');
+    img.src = dataUrl; img.classList.remove('hidden');
+    $('#btn-return-photo-remove').classList.remove('hidden');
+    $('#btn-save-return').disabled = false;
+  } catch (e) {
+    errEl.textContent = 'Foto gagal diproses (' + e.message + '). Coba foto langsung dari kamera, bukan dari galeri.';
+    errEl.classList.remove('hidden');
+  }
+}
+$('#return-photo-camera').addEventListener('change', (e) => handleReturnPhotoFile(e.target.files[0]));
+$('#return-photo-gallery').addEventListener('change', (e) => handleReturnPhotoFile(e.target.files[0]));
+$('#btn-return-photo-remove').addEventListener('click', () => {
+  returnPhotoData = '';
+  $('#return-photo-preview').classList.add('hidden');
+  $('#return-photo-preview').src = '';
+  $('#btn-return-photo-remove').classList.add('hidden');
+  $('#btn-save-return').disabled = true;
+});
+$('#btn-save-return').addEventListener('click', async () => {
+  if (!returnLoanId) return;
+  if (!returnPhotoData) { toast('Foto bukti pengembalian wajib diisi.'); return; }
+  const btn = $('#btn-save-return');
+  btn.disabled = true;
+  try {
+    const r = await apiJSON('/api/loans/' + returnLoanId + '/return', { photo: returnPhotoData });
+    toast('Pengembalian tersimpan. Stok "' + r.loan.item_name + '" kembali menjadi ' + fmt(r.balance) + '.');
+    $('#return-box').classList.add('hidden');
+    returnLoanId = null; returnPhotoData = '';
+    loadLoans();
+    loadLoanAlert();
+  } catch (e) { toast(e.message); }
+  btn.disabled = false;
+});
 
 // ---------- stock opname (SO) ----------
 async function lookupSo() {
@@ -889,8 +1085,8 @@ async function loadAccount() {
   $('#acc-name').textContent = ME.username;
   $('#acc-role').textContent = IS_ADMIN ? 'Admin' : 'User';
   $('#acc-desc').textContent = IS_ADMIN
-    ? 'Akses penuh — tambah, ubah & hapus sparepart, atur stok, impor Excel, dan kelola akun User.'
-    : 'Hanya melihat stok, mencari, dan mencatat pengambilan. Tidak bisa tambah, ubah, hapus, atau impor.';
+    ? 'Akses penuh — tambah, ubah & hapus sparepart, atur stok, impor Excel, kelola peminjaman tools, dan kelola akun User.'
+    : 'Hanya melihat stok, mencari, mencatat pengambilan, dan meminjam tools. Tidak bisa tambah, ubah, hapus, atau impor.';
   $('#admin-users-card').classList.toggle('hidden', !IS_ADMIN);
   if (IS_ADMIN) loadUsers();
   if (!deferredPrompt) $('#install-guide').classList.remove('hidden');
@@ -1024,6 +1220,7 @@ function closeScanner() {
 }
 async function applyScan(code) {
   if (scanTarget === 'take') { $('#take-code').value = code; showView('take'); lookupTake(); }
+  else if (scanTarget === 'loan') { $('#loan-code').value = code; showView('loan'); lookupLoan(); }
   else if (scanTarget === 'so') { $('#so-code').value = code; showView('so'); lookupSo(); }
   else if (scanTarget === 'add') { $('#add-barcode').value = code; }
   else if (scanTarget === 'inv') {
@@ -1038,12 +1235,14 @@ async function applyScan(code) {
   toast('Kode terbaca: ' + code);
 }
 $('#btn-scan-take').addEventListener('click', () => openScanner('take'));
+$('#btn-scan-loan').addEventListener('click', () => openScanner('loan'));
 $('#btn-scan-add').addEventListener('click', () => openScanner('add'));
 $('#btn-scan-inv').addEventListener('click', () => openScanner('inv'));
 $('#btn-scan-close').addEventListener('click', closeScanner);
 $('#btn-scan-manual').addEventListener('click', () => {
   closeScanner();
   if (scanTarget === 'take') { showView('take'); $('#take-code').focus(); }
+  else if (scanTarget === 'loan') { showView('loan'); $('#loan-code').focus(); }
   else if (scanTarget === 'so') { showView('so'); $('#so-code').focus(); }
   else if (scanTarget === 'add') { $('#add-barcode').focus(); }
   else { showView('inventory'); $('#inv-search').focus(); }
