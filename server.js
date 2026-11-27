@@ -79,9 +79,15 @@ CREATE TABLE IF NOT EXISTS so_records (
 );
 CREATE INDEX IF NOT EXISTS idx_so_date ON so_records(date, id);
 CREATE INDEX IF NOT EXISTS idx_so_item ON so_records(item_id, date);
+CREATE TABLE IF NOT EXISTS tools (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS loans (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  tool_id INTEGER REFERENCES tools(id) ON DELETE SET NULL,
   qty INTEGER NOT NULL,
   borrower TEXT NOT NULL,
   borrowed_by TEXT NOT NULL DEFAULT '',
@@ -92,8 +98,36 @@ CREATE TABLE IF NOT EXISTS loans (
   return_photo TEXT DEFAULT '',
   status TEXT NOT NULL DEFAULT 'dipinjam' CHECK (status IN ('dipinjam','dikembalikan'))
 );
-CREATE INDEX IF NOT EXISTS idx_loans_item ON loans(item_id);
-CREATE INDEX IF NOT EXISTS idx_loans_status ON loans(status, due_at);
+-- Indeks loans dibuat SETELAH migrasi di bawah (skema lama belum punya tool_id).
+-- Peminjaman dibawa supplier: part inventaris dibawa keluar (contoh/service),
+-- mengurangi stok sementara; kembali → stok pulih; bisa ditandai tidak kembali.
+-- Bisa juga untuk part NON-STOK (kode tidak ada di inventaris): dicatat manual
+-- dengan item_id NULL + manual_name/manual_code, tanpa perubahan stok.
+-- Jatuh tempo TIDAK disimpan — dihitung dinamis dari taken_at + setting
+-- pengingat aktif (supplier_reminder_days), supaya mengubah setting langsung
+-- mengevaluasi ulang semua pinjaman supplier yang masih aktif.
+CREATE TABLE IF NOT EXISTS supplier_loans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id INTEGER REFERENCES items(id) ON DELETE SET NULL,
+  manual_name TEXT DEFAULT '',
+  manual_code TEXT DEFAULT '',
+  qty INTEGER NOT NULL,
+  supplier TEXT NOT NULL,
+  purpose TEXT NOT NULL DEFAULT 'contoh' CHECK (purpose IN ('contoh','service')),
+  taken_by TEXT NOT NULL DEFAULT '',
+  taken_at TEXT NOT NULL,
+  returned_at TEXT DEFAULT '',
+  returned_by TEXT DEFAULT '',
+  return_photo TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'dibawa' CHECK (status IN ('dibawa','dikembalikan','tidak_kembali'))
+);
+CREATE INDEX IF NOT EXISTS idx_supplier_loans_item ON supplier_loans(item_id);
+CREATE INDEX IF NOT EXISTS idx_supplier_loans_status ON supplier_loans(status, taken_at);
+-- Pengaturan aplikasi (key-value). Saat ini: supplier_reminder_days (1–30, default 2).
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL DEFAULT ''
+);
 `);
 
 // migrasi: kolom sidik foto (perceptual hash + histogram warna) untuk "Cari pakai Foto"
@@ -103,13 +137,71 @@ for (const col of ['photo_hash TEXT DEFAULT \'\'', 'photo_hist TEXT DEFAULT \'\'
   if (!has) db.exec('ALTER TABLE items ADD COLUMN ' + col);
 }
 
+// migrasi loans lama (item_id -> tool_id): peminjaman tools kini berbasis nama
+// tools saja, bukan barang inventaris. Tabel loans saat ini kosong di semua DB,
+// jadi skema lama bisa di-drop; bila ternyata berisi data, migrasikan dengan
+// membuat satu tool per nama barang yang pernah dipinjam — tidak ada pinjaman
+// yang hilang.
+{
+  const cols = db.prepare("SELECT name FROM pragma_table_info('loans')").all().map((r) => r.name);
+  if (cols.includes('item_id')) {
+    const n = db.prepare('SELECT COUNT(*) c FROM loans').get().c;
+    const newLoansSql = `CREATE TABLE loans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tool_id INTEGER REFERENCES tools(id) ON DELETE SET NULL,
+      qty INTEGER NOT NULL,
+      borrower TEXT NOT NULL,
+      borrowed_by TEXT NOT NULL DEFAULT '',
+      borrowed_at TEXT NOT NULL,
+      due_at TEXT NOT NULL,
+      returned_at TEXT DEFAULT '',
+      returned_by TEXT DEFAULT '',
+      return_photo TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'dipinjam' CHECK (status IN ('dipinjam','dikembalikan'))
+    )`;
+    if (n === 0) {
+      db.exec('DROP TABLE loans');
+      db.exec(newLoansSql);
+    } else {
+      db.exec(newLoansSql.replace('CREATE TABLE loans', 'CREATE TABLE loans_new'));
+      const rows = db.prepare('SELECT * FROM loans').all();
+      for (const r of rows) {
+        const item = db.prepare('SELECT name FROM items WHERE id = ?').get(r.item_id);
+        const toolName = (item && item.name) || ('Barang #' + r.item_id);
+        let tool = db.prepare('SELECT id FROM tools WHERE name = ? COLLATE NOCASE').get(toolName);
+        if (!tool) tool = { id: db.prepare('INSERT INTO tools (name, created_at, created_by) VALUES (?,?,?)').run(toolName, nowIso(), 'migrasi').lastInsertRowid };
+        db.prepare(`INSERT INTO loans_new (id, tool_id, qty, borrower, borrowed_by, borrowed_at, due_at, returned_at, returned_by, return_photo, status)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(r.id, tool.id, r.qty, r.borrower, r.borrowed_by, r.borrowed_at, r.due_at, r.returned_at, r.returned_by, r.return_photo, r.status);
+      }
+      db.exec('DROP TABLE loans');
+      db.exec('ALTER TABLE loans_new RENAME TO loans');
+    }
+    db.exec('DROP INDEX IF EXISTS idx_loans_item');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_loans_tool ON loans(tool_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_loans_status ON loans(status, due_at)');
+  }
+}
+
+// Indeks loans — dibuat di sini (setelah migrasi) supaya DB lama yang skema
+// loans-nya masih item_id tidak gagal saat blok CREATE TABLE di atas jalan.
+db.exec('CREATE INDEX IF NOT EXISTS idx_loans_tool ON loans(tool_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_loans_status ON loans(status, due_at)');
+
 // ---------- helpers ----------
 const LOW_STOCK = 5; // stok <= 5 (dan > 0) dianggap menipis
 function nowIso() { return new Date().toISOString(); }
 function todayLocal() {
-  const d = new Date();
-  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  // Tanggal kalender di WIB (Asia/Jakarta). Server jalan di UTC, sedangkan
+  // pengguna di WIB — memakai tanggal server menggeser hari pada 00:00–07:00 WIB
+  // sehingga catatan SO tersimpan di tanggal yang salah dan tidak muncul di daftar.
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+function timeWIB(iso) {
+  // Jam (HH:MM) dalam WIB dari timestamp ISO (UTC). Jangan iris langsung dari
+  // ISO — itu jam UTC, 7 jam lebih lambat dari WIB.
+  if (!iso) return '';
+  const d = new Date(new Date(iso).getTime() + 7 * 3600 * 1000);
+  return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0');
 }
 function hashPassword(password, salt) {
   return crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256').toString('hex');
@@ -280,11 +372,12 @@ app.get('/api/stats', requireAuth, (req, res) => {
 // Rata-rata pemakaian = total pengambilan (kind='out') dibagi jumlah bulan sejak
 // pengambilan pertama tercatat. 1 bulan = 30 hari, dibulatkan ke atas, minimal 1 bulan.
 // Koreksi opname impor Excel bukan pemakaian, jadi tidak dihitung.
-// Peminjaman tools juga bukan pemakaian: "Pinjam" mengurangi stok sementara
-// dan "Kembali (Pinjam)" mengembalikannya — keduanya tidak dihitung.
+// Peminjaman tools bukan pemakaian (tools tidak tercatat di moves).
+// Part yang dibawa supplier juga bukan pemakaian: "Dibawa supplier (…)"
+// mengurangi stok sementara dan "Kembali dari supplier" mengembalikannya.
 function usageStats(itemId, stock) {
   const row = db.prepare(`SELECT COALESCE(SUM(qty),0) AS total_out, MIN(date) AS first_date
-    FROM moves WHERE item_id = ? AND kind = 'out' AND note != 'Opname impor Excel' AND note != 'Opname (SO)' AND note != 'Pinjam'`).get(itemId);
+    FROM moves WHERE item_id = ? AND kind = 'out' AND note != 'Opname impor Excel' AND note != 'Opname (SO)' AND note != 'Pinjam' AND note NOT LIKE 'Dibawa supplier%'`).get(itemId);
   const totalOut = row.total_out || 0;
   if (!totalOut || !row.first_date) {
     return { hasHistory: false, totalOut: 0, months: 0, avgPerMonth: 0, moi: null, yoi: null, firstDate: null };
@@ -543,35 +636,60 @@ app.post('/api/take', requireAuth, (req, res) => {
 
 app.get('/api/takes/recent', requireAuth, (req, res) => {
   // hanya pengambilan biasa — pergerakan Pinjam / Kembali (Pinjam) punya
-  // history sendiri di menu Pinjam, jadi tidak ikut di sini
+  // history sendiri di menu Pinjam, dan part yang dibawa supplier punya
+  // history sendiri di menu Supplier, jadi tidak ikut di sini
   const rows = db.prepare(`SELECT m.*, i.name AS item_name, i.fd_code FROM moves m
-    JOIN items i ON i.id = m.item_id WHERE m.kind = 'out' AND m.note != 'Pinjam' ORDER BY m.id DESC LIMIT 20`).all();
+    JOIN items i ON i.id = m.item_id WHERE m.kind = 'out' AND m.note != 'Pinjam' AND m.note NOT LIKE 'Dibawa supplier%' ORDER BY m.id DESC LIMIT 20`).all();
   ok(res, { takes: rows });
 });
 
+// ---------- daftar tools (nama saja, tanpa kode) ----------
+// Tools diinput manual oleh Admin/User; peminjaman tools memilih dari daftar ini.
+app.get('/api/tools', requireAuth, (req, res) => {
+  const rows = db.prepare('SELECT * FROM tools ORDER BY name COLLATE NOCASE ASC').all();
+  ok(res, { tools: rows.map((t) => ({ id: t.id, name: t.name, created_at: t.created_at, created_by: t.created_by || '' })) });
+});
+
+app.post('/api/tools', requireAuth, (req, res) => {
+  const name = cleanStr(req.body.name);
+  if (!name) return fail(res, 400, 'Nama tools wajib diisi.');
+  const dup = db.prepare('SELECT id FROM tools WHERE name = ? COLLATE NOCASE').get(name);
+  if (dup) return fail(res, 409, 'Tools "' + name + '" sudah ada di daftar.');
+  const ins = db.prepare('INSERT INTO tools (name, created_at, created_by) VALUES (?,?,?)').run(name, nowIso(), req.account.username);
+  ok(res, { tool: { id: ins.lastInsertRowid, name, created_by: req.account.username } });
+});
+
+app.delete('/api/tools/:id', requireAuth, requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const tool = db.prepare('SELECT * FROM tools WHERE id = ?').get(id);
+  if (!tool) return fail(res, 404, 'Tools tidak ditemukan.');
+  const active = db.prepare("SELECT COUNT(*) c FROM loans WHERE tool_id = ? AND status = 'dipinjam'").get(id).c;
+  if (active) return fail(res, 400, 'Tools "' + tool.name + '" masih punya ' + active + ' pinjaman aktif, tidak bisa dihapus.');
+  db.prepare('DELETE FROM tools WHERE id = ?').run(id);
+  ok(res, { message: 'Tools "' + tool.name + '" dihapus.' });
+});
+
 // ---------- peminjaman tools — semua peran yang login boleh ----------
-// Satu pinjaman = sejumlah pcs dari satu barang, dipinjam seseorang, wajib
-// dikembalikan dalam 2 hari (48 jam). Foto bukti pengembalian WAJIB.
-// Peminjaman mengurangi stok (move keluar "Pinjam"); pengembalian menambah
-// stok kembali (move masuk "Kembali (Pinjam)"). Keduanya tercatat di kartu
-// stok barang, tapi TIDAK dihitung sebagai pemakaian YOI/MOI.
+// Satu pinjaman = sejumlah pcs dari satu TOOLS (hanya nama, tanpa kode),
+// dipinjam seseorang, wajib dikembalikan dalam 2 hari (48 jam). Foto bukti
+// pengembalian WAJIB. Tools BUKAN stok sparepart: peminjaman TIDAK mengubah
+// stok inventaris dan TIDAK mencatat move — murni catatan peminjaman.
 const LOAN_DUE_MS = 48 * 3600 * 1000;
 function loanById(id) {
-  return db.prepare(`SELECT l.*, i.name AS item_name, i.fd_code, i.stock AS current_stock
-    FROM loans l JOIN items i ON i.id = l.item_id WHERE l.id = ?`).get(id);
+  return db.prepare(`SELECT l.*, t.name AS tool_name
+    FROM loans l LEFT JOIN tools t ON t.id = l.tool_id WHERE l.id = ?`).get(id);
 }
 function loanRow(r) {
   const due = new Date(r.due_at);
   const now = new Date();
   const overdueDays = r.status === 'dipinjam' && now > due ? Math.floor((now - due) / 86400000) : 0;
   return {
-    id: r.id, item_id: r.item_id, item_name: r.item_name, fd_code: r.fd_code || '',
+    id: r.id, tool_id: r.tool_id, tool_name: r.tool_name || '(tools dihapus)',
     qty: r.qty, borrower: r.borrower, borrowed_by: r.borrowed_by || '',
     borrowed_at: r.borrowed_at, due_at: r.due_at,
     returned_at: r.returned_at || '', returned_by: r.returned_by || '',
     status: r.status, overdue: r.status === 'dipinjam' && now > due,
     overdue_days: overdueDays, hasReturnPhoto: !!r.return_photo,
-    current_stock: r.current_stock,
   };
 }
 
@@ -580,40 +698,30 @@ app.post('/api/loans', requireAuth, (req, res) => {
   const borrower = cleanStr(req.body.borrower);
   if (isNaN(qty) || qty <= 0) return fail(res, 400, 'Jumlah harus angka lebih dari 0.');
   if (!borrower) return fail(res, 400, 'Nama peminjam wajib diisi.');
-  let item = null;
-  if (req.body.itemId !== undefined && req.body.itemId !== null && String(req.body.itemId) !== '') {
-    const itemId = parseInt(req.body.itemId, 10);
-    if (isNaN(itemId)) return fail(res, 400, 'Barang belum dipilih.');
-    item = db.prepare('SELECT * FROM items WHERE id = ?').get(itemId);
-    if (!item) return fail(res, 404, 'Barang tidak ditemukan.');
+  let tool = null;
+  if (req.body.toolId !== undefined && req.body.toolId !== null && String(req.body.toolId) !== '') {
+    const toolId = parseInt(req.body.toolId, 10);
+    if (isNaN(toolId)) return fail(res, 400, 'Tools belum dipilih.');
+    tool = db.prepare('SELECT * FROM tools WHERE id = ?').get(toolId);
+    if (!tool) return fail(res, 404, 'Tools tidak ditemukan.');
   } else {
-    const code = cleanStr(req.body.code || '');
-    if (!code) return fail(res, 400, 'Kode FD / barcode belum diisi.');
-    item = db.prepare('SELECT * FROM items WHERE UPPER(fd_code) = UPPER(?) OR UPPER(barcode) = UPPER(?) LIMIT 1').get(code, code);
-    if (!item) return fail(res, 404, 'Barang dengan kode "' + code + '" tidak ditemukan.');
+    const name = cleanStr(req.body.tool || req.body.name || '');
+    if (!name) return fail(res, 400, 'Nama tools belum diisi.');
+    tool = db.prepare('SELECT * FROM tools WHERE name = ? COLLATE NOCASE').get(name);
+    if (!tool) return fail(res, 404, 'Tools "' + name + '" belum ada di daftar. Tambahkan dulu di menu Peminjaman Tools.');
   }
-  const r = withTx(() => {
-    const row = db.prepare('SELECT * FROM items WHERE id = ?').get(item.id);
-    if (row.stock < qty) return { error: 'Stok tidak cukup. Sisa ' + row.stock + ', diminta ' + qty + '.' };
-    const next = row.stock - qty;
-    db.prepare('UPDATE items SET stock = ?, updated_at = ? WHERE id = ?').run(next, nowIso(), item.id);
-    db.prepare(`INSERT INTO moves (item_id, date, kind, qty, balance, machine, taken_by, note, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?)`).run(item.id, todayLocal(), 'out', qty, next, '', borrower, 'Pinjam', nowIso());
-    const borrowedAt = nowIso();
-    const dueAt = new Date(Date.now() + LOAN_DUE_MS).toISOString();
-    const ins = db.prepare(`INSERT INTO loans (item_id, qty, borrower, borrowed_by, borrowed_at, due_at, status)
-      VALUES (?,?,?,?,?,?,?)`).run(item.id, qty, borrower, req.account.username, borrowedAt, dueAt, 'dipinjam');
-    return { loanId: ins.lastInsertRowid, balance: next };
-  });
-  if (r.error) return fail(res, 400, r.error);
-  const loan = loanById(r.loanId);
-  ok(res, { loan: loanRow(loan), balance: r.balance });
+  const borrowedAt = nowIso();
+  const dueAt = new Date(Date.now() + LOAN_DUE_MS).toISOString();
+  const ins = db.prepare(`INSERT INTO loans (tool_id, qty, borrower, borrowed_by, borrowed_at, due_at, status)
+    VALUES (?,?,?,?,?,?,?)`).run(tool.id, qty, borrower, req.account.username, borrowedAt, dueAt, 'dipinjam');
+  const loan = loanById(ins.lastInsertRowid);
+  ok(res, { loan: loanRow(loan) });
 });
 
 app.get('/api/loans', requireAuth, (req, res) => {
   const filter = req.query.status || 'all'; // all | dipinjam | dikembalikan | terlambat
-  const rows = db.prepare(`SELECT l.*, i.name AS item_name, i.fd_code, i.stock AS current_stock
-    FROM loans l JOIN items i ON i.id = l.item_id ORDER BY l.borrowed_at DESC, l.id DESC`).all();
+  const rows = db.prepare(`SELECT l.*, t.name AS tool_name
+    FROM loans l LEFT JOIN tools t ON t.id = l.tool_id ORDER BY l.borrowed_at DESC, l.id DESC`).all();
   const all = rows.map(loanRow);
   let loans = all;
   if (filter === 'dipinjam') loans = all.filter((l) => l.status === 'dipinjam');
@@ -630,29 +738,190 @@ app.post('/api/loans/:id/return', requireAuth, (req, res) => {
     return fail(res, 400, 'Foto bukti pengembalian wajib diisi.');
   }
   if (photo.length > 1500000) return fail(res, 400, 'Foto terlalu besar (maks ~1 MB setelah dikompres).');
-  const r = withTx(() => {
-    const loan = db.prepare('SELECT * FROM loans WHERE id = ?').get(id);
-    if (!loan) return { error: 'Pinjaman tidak ditemukan.', status: 404 };
-    if (loan.status === 'dikembalikan') return { error: 'Pinjaman ini sudah dikembalikan pada ' + (loan.returned_at || '').slice(0, 10) + '.', status: 400 };
-    const item = db.prepare('SELECT * FROM items WHERE id = ?').get(loan.item_id);
-    if (!item) return { error: 'Barang tidak ditemukan.', status: 404 };
-    const next = item.stock + loan.qty;
-    db.prepare('UPDATE items SET stock = ?, updated_at = ? WHERE id = ?').run(next, nowIso(), item.id);
-    db.prepare(`INSERT INTO moves (item_id, date, kind, qty, balance, machine, taken_by, note, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?)`).run(item.id, todayLocal(), 'in', loan.qty, next, '', loan.borrower, 'Kembali (Pinjam)', nowIso());
-    db.prepare(`UPDATE loans SET status = 'dikembalikan', returned_at = ?, returned_by = ?, return_photo = ? WHERE id = ?`)
-      .run(nowIso(), req.account.username, photo, id);
-    return { balance: next };
-  });
-  if (r.error) return fail(res, r.status || 400, r.error);
-  const loan = loanById(id);
-  ok(res, { loan: loanRow(loan), balance: r.balance });
+  const loan = db.prepare('SELECT * FROM loans WHERE id = ?').get(id);
+  if (!loan) return fail(res, 404, 'Pinjaman tidak ditemukan.');
+  if (loan.status === 'dikembalikan') return fail(res, 400, 'Pinjaman ini sudah dikembalikan pada ' + (loan.returned_at || '').slice(0, 10) + '.');
+  db.prepare(`UPDATE loans SET status = 'dikembalikan', returned_at = ?, returned_by = ?, return_photo = ? WHERE id = ?`)
+    .run(nowIso(), req.account.username, photo, id);
+  const out = loanById(id);
+  ok(res, { loan: loanRow(out) });
 });
 
 app.get('/api/loans/:id/return-photo', requireAuth, (req, res) => {
   const id = parseInt(req.params.id, 10);
   const row = db.prepare('SELECT return_photo FROM loans WHERE id = ?').get(id);
   if (!row || !row.return_photo) return fail(res, 404, 'Pinjaman ini belum punya foto bukti pengembalian.');
+  const buf = signatureFromDataUri(row.return_photo);
+  if (!buf) return fail(res, 404, 'Foto tidak bisa dibaca.');
+  const mime = /^data:(image\/[a-zA-Z+]+);base64,/.exec(row.return_photo);
+  res.setHeader('Content-Type', (mime && mime[1]) || 'image/jpeg');
+  res.setHeader('Cache-Control', 'private, max-age=86400');
+  res.send(buf);
+});
+
+// ---------- pengaturan aplikasi ----------
+// Pengingat supplier (hari) bisa diatur Admin 1–30, default 2. Dibaca semua
+// peran yang login; diubah hanya Admin.
+function supplierReminderDays() {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'supplier_reminder_days'").get();
+  const n = parseInt(row && row.value, 10);
+  return Number.isInteger(n) && n >= 1 && n <= 30 ? n : 2;
+}
+app.get('/api/settings', requireAuth, (req, res) => {
+  ok(res, { settings: { supplier_reminder_days: supplierReminderDays() } });
+});
+app.put('/api/settings/supplier-reminder-days', requireAuth, requireAdmin, (req, res) => {
+  const days = parseInt(req.body.days, 10);
+  if (!Number.isInteger(days) || days < 1 || days > 30) {
+    return fail(res, 400, 'Pengingat harus 1–30 hari.');
+  }
+  db.prepare("INSERT INTO settings (key, value) VALUES ('supplier_reminder_days', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(days));
+  ok(res, { supplier_reminder_days: days });
+});
+
+// ---------- peminjaman dibawa supplier — KHUSUS ADMIN ----------
+// Part inventaris dibawa supplier untuk contoh atau service, wajib kembali
+// dalam N hari (setting pengingat, default 2 hari). Foto bukti pengembalian
+// WAJIB saat kembali. Membawa part mengurangi stok (move keluar
+// "Dibawa supplier (contoh/service)"); kembali menambah stok (move masuk
+// "Kembali dari supplier"). Keduanya tercatat di kartu stok barang, tapi
+// TIDAK dihitung sebagai pemakaian YOI/MOI.
+// Kode yang TIDAK ada di inventaris tetap bisa dicatat sebagai part non-stok
+// (nama part diisi manual): tanpa perubahan stok sama sekali.
+// Contoh yang memang tidak kembali bisa ditandai "tidak kembali" — record
+// ditutup tanpa perubahan stok.
+function supplierLoanById(id) {
+  return db.prepare(`SELECT s.*, i.name AS item_name, i.fd_code, i.stock AS current_stock
+    FROM supplier_loans s LEFT JOIN items i ON i.id = s.item_id WHERE s.id = ?`).get(id);
+}
+function supplierLoanRow(r) {
+  // Jatuh tempo dihitung DINAMIS dari taken_at + setting pengingat saat ini —
+  // mengubah setting langsung mengevaluasi ulang semua pinjaman aktif.
+  const due = new Date(new Date(r.taken_at).getTime() + supplierReminderDays() * 86400000);
+  const now = new Date();
+  const overdueDays = r.status === 'dibawa' && now > due ? Math.floor((now - due) / 86400000) : 0;
+  return {
+    id: r.id, item_id: r.item_id == null ? null : r.item_id,
+    item_name: r.item_name || r.manual_name || '(barang dihapus)',
+    fd_code: r.fd_code || r.manual_code || '',
+    manual_name: r.manual_name || '', manual_code: r.manual_code || '',
+    non_stock: r.item_id == null,
+    qty: r.qty, supplier: r.supplier, purpose: r.purpose, taken_by: r.taken_by || '',
+    taken_at: r.taken_at, due_at: due.toISOString(),
+    returned_at: r.returned_at || '', returned_by: r.returned_by || '',
+    status: r.status, overdue: r.status === 'dibawa' && now > due,
+    overdue_days: overdueDays, hasReturnPhoto: !!r.return_photo,
+    current_stock: r.current_stock == null ? null : r.current_stock,
+    reminder_days: supplierReminderDays(),
+  };
+}
+
+app.post('/api/supplier-loans', requireAuth, requireAdmin, (req, res) => {
+  const qty = parseInt(req.body.qty, 10);
+  const supplier = cleanStr(req.body.supplier);
+  const purpose = cleanStr(req.body.purpose);
+  if (isNaN(qty) || qty <= 0) return fail(res, 400, 'Jumlah harus angka lebih dari 0.');
+  if (!supplier) return fail(res, 400, 'Nama supplier wajib diisi.');
+  if (purpose !== 'contoh' && purpose !== 'service') return fail(res, 400, 'Tujuan harus "Contoh" atau "Service".');
+  let item = null;
+  let manualName = '';
+  let manualCode = '';
+  if (req.body.itemId !== undefined && req.body.itemId !== null && String(req.body.itemId) !== '') {
+    const itemId = parseInt(req.body.itemId, 10);
+    if (isNaN(itemId)) return fail(res, 400, 'Barang belum dipilih.');
+    item = db.prepare('SELECT * FROM items WHERE id = ?').get(itemId);
+    if (!item) return fail(res, 404, 'Barang tidak ditemukan.');
+  } else {
+    const code = cleanStr(req.body.code || '');
+    if (!code) return fail(res, 400, 'Kode FD / barcode belum diisi.');
+    item = db.prepare('SELECT * FROM items WHERE UPPER(fd_code) = UPPER(?) OR UPPER(barcode) = UPPER(?) LIMIT 1').get(code, code);
+    if (!item) {
+      // jalur non-stok: kode tidak dikenal — catat manual, tanpa ubah stok
+      manualName = cleanStr(req.body.manualName || req.body.manual_name || '');
+      if (!manualName) return fail(res, 400, 'Kode tidak ada di stok — isi nama part secara manual.');
+      manualCode = code;
+    }
+  }
+  const r = withTx(() => {
+    let next = null;
+    if (item) {
+      const row = db.prepare('SELECT * FROM items WHERE id = ?').get(item.id);
+      if (row.stock < qty) return { error: 'Stok tidak cukup. Sisa ' + row.stock + ', diminta ' + qty + '.' };
+      next = row.stock - qty;
+      db.prepare('UPDATE items SET stock = ?, updated_at = ? WHERE id = ?').run(next, nowIso(), item.id);
+      db.prepare(`INSERT INTO moves (item_id, date, kind, qty, balance, machine, taken_by, note, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(item.id, todayLocal(), 'out', qty, next, purpose, supplier, 'Dibawa supplier (' + purpose + ')', nowIso());
+    }
+    const takenAt = nowIso();
+    const ins = db.prepare(`INSERT INTO supplier_loans (item_id, manual_name, manual_code, qty, supplier, purpose, taken_by, taken_at, status)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(item ? item.id : null, manualName, manualCode, qty, supplier, purpose, req.account.username, takenAt, 'dibawa');
+    return { loanId: ins.lastInsertRowid, balance: next };
+  });
+  if (r.error) return fail(res, 400, r.error);
+  const loan = supplierLoanById(r.loanId);
+  ok(res, { loan: supplierLoanRow(loan), balance: r.balance });
+});
+
+app.get('/api/supplier-loans', requireAuth, requireAdmin, (req, res) => {
+  const filter = req.query.status || 'all'; // all | dibawa | dikembalikan | tidak_kembali | terlambat
+  const rows = db.prepare(`SELECT s.*, i.name AS item_name, i.fd_code, i.stock AS current_stock
+    FROM supplier_loans s LEFT JOIN items i ON i.id = s.item_id ORDER BY s.taken_at DESC, s.id DESC`).all();
+  const all = rows.map(supplierLoanRow);
+  let loans = all;
+  if (filter === 'dibawa') loans = all.filter((l) => l.status === 'dibawa');
+  else if (filter === 'dikembalikan') loans = all.filter((l) => l.status === 'dikembalikan');
+  else if (filter === 'tidak_kembali') loans = all.filter((l) => l.status === 'tidak_kembali');
+  else if (filter === 'terlambat') loans = all.filter((l) => l.overdue);
+  const overdueCount = all.filter((l) => l.overdue).length;
+  ok(res, { loans, overdueCount });
+});
+
+app.post('/api/supplier-loans/:id/return', requireAuth, requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const photo = req.body.photo;
+  if (!photo || typeof photo !== 'string' || !photo.startsWith('data:image/')) {
+    return fail(res, 400, 'Foto bukti pengembalian wajib diisi.');
+  }
+  if (photo.length > 1500000) return fail(res, 400, 'Foto terlalu besar (maks ~1 MB setelah dikompres).');
+  const r = withTx(() => {
+    const loan = db.prepare('SELECT * FROM supplier_loans WHERE id = ?').get(id);
+    if (!loan) return { error: 'Peminjaman tidak ditemukan.', status: 404 };
+    if (loan.status === 'dikembalikan') return { error: 'Part ini sudah dikembalikan pada ' + (loan.returned_at || '').slice(0, 10) + '.', status: 400 };
+    if (loan.status === 'tidak_kembali') return { error: 'Peminjaman ini sudah ditandai tidak kembali.', status: 400 };
+    let next = null;
+    if (loan.item_id != null) {
+      const item = db.prepare('SELECT * FROM items WHERE id = ?').get(loan.item_id);
+      if (!item) return { error: 'Barang tidak ditemukan.', status: 404 };
+      next = item.stock + loan.qty;
+      db.prepare('UPDATE items SET stock = ?, updated_at = ? WHERE id = ?').run(next, nowIso(), item.id);
+      db.prepare(`INSERT INTO moves (item_id, date, kind, qty, balance, machine, taken_by, note, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(item.id, todayLocal(), 'in', loan.qty, next, loan.purpose, loan.supplier, 'Kembali dari supplier', nowIso());
+    }
+    db.prepare(`UPDATE supplier_loans SET status = 'dikembalikan', returned_at = ?, returned_by = ?, return_photo = ? WHERE id = ?`)
+      .run(nowIso(), req.account.username, photo, id);
+    return { balance: next };
+  });
+  if (r.error) return fail(res, r.status || 400, r.error);
+  const loan = supplierLoanById(id);
+  ok(res, { loan: supplierLoanRow(loan), balance: r.balance });
+});
+
+app.post('/api/supplier-loans/:id/not-returned', requireAuth, requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const loan = db.prepare('SELECT * FROM supplier_loans WHERE id = ?').get(id);
+  if (!loan) return fail(res, 404, 'Peminjaman tidak ditemukan.');
+  if (loan.status === 'dikembalikan') return fail(res, 400, 'Part ini sudah dikembalikan.');
+  if (loan.status === 'tidak_kembali') return fail(res, 400, 'Peminjaman ini sudah ditandai tidak kembali.');
+  db.prepare(`UPDATE supplier_loans SET status = 'tidak_kembali', returned_at = ?, returned_by = ? WHERE id = ?`)
+    .run(nowIso(), req.account.username, id);
+  const out = supplierLoanById(id);
+  ok(res, { loan: supplierLoanRow(out) });
+});
+
+app.get('/api/supplier-loans/:id/return-photo', requireAuth, requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const row = db.prepare('SELECT return_photo FROM supplier_loans WHERE id = ?').get(id);
+  if (!row || !row.return_photo) return fail(res, 404, 'Peminjaman ini belum punya foto bukti pengembalian.');
   const buf = signatureFromDataUri(row.return_photo);
   if (!buf) return fail(res, 404, 'Foto tidak bisa dibaca.');
   const mime = /^data:(image\/[a-zA-Z+]+);base64,/.exec(row.return_photo);
@@ -706,8 +975,13 @@ app.post('/api/so', requireAuth, requireAdmin, (req, res) => {
     if (!item) return fail(res, 404, 'Barang dengan kode "' + code + '" tidak ditemukan.');
   }
   const diff = counted - item.stock;
+  // Tanggal SO mengikuti tanggal yang sedang dipilih pengguna (dikirim client);
+  // tanpa tanggal, pakai hari ini (WIB). Sebelumnya tanggal selalu hari ini
+  // menurut server, sehingga SO yang dicatat sambil melihat tanggal lain
+  // tidak muncul di daftar tanggal tersebut.
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(req.body.date || '') ? req.body.date : todayLocal();
   const r = db.prepare(`INSERT INTO so_records (item_id, date, counted, system_stock, diff, username, adjusted, created_at)
-    VALUES (?,?,?,?,?,?,?,?)`).run(item.id, todayLocal(), counted, item.stock, diff, req.account.username, 0, nowIso());
+    VALUES (?,?,?,?,?,?,?,?)`).run(item.id, date, counted, item.stock, diff, req.account.username, 0, nowIso());
   const rec = soRecordById(r.lastInsertRowid);
   ok(res, { record: soRow(rec), item: itemRow(item) });
 });
@@ -725,7 +999,7 @@ app.get('/api/so/export', requireAuth, requireAdmin, (req, res) => {
   for (const m of rows) {
     aoa.push([
       m.fd_code || '', m.item_name || '', m.system_stock, m.counted,
-      m.diff, soStatus(m.diff), m.created_at ? m.created_at.slice(11, 16) : '', m.username || '',
+      m.diff, soStatus(m.diff), m.created_at ? timeWIB(m.created_at) : '', m.username || '',
     ]);
   }
   const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -750,8 +1024,10 @@ app.post('/api/so/:id/adjust', requireAuth, requireAdmin, (req, res) => {
     if (!item) return { error: 'Barang tidak ditemukan.', status: 404 };
     db.prepare('UPDATE items SET stock = ?, updated_at = ? WHERE id = ?').run(rec.counted, nowIso(), item.id);
     const kind = rec.diff > 0 ? 'in' : 'out';
+    // Koreksi tercatat pada tanggal catatan SO-nya, bukan hari ini — supaya
+    // kartu stok menampilkan "Opname (SO)" di hari yang sama dengan SO-nya.
     db.prepare(`INSERT INTO moves (item_id, date, kind, qty, balance, machine, taken_by, note, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?)`).run(item.id, todayLocal(), kind, Math.abs(rec.diff), rec.counted, '', '', 'Opname (SO)', nowIso());
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(item.id, rec.date, kind, Math.abs(rec.diff), rec.counted, '', '', 'Opname (SO)', nowIso());
     db.prepare('UPDATE so_records SET adjusted = 1 WHERE id = ?').run(id);
     return { balance: rec.counted, name: item.name };
   });

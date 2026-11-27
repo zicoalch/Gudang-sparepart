@@ -12,8 +12,9 @@ function check(name, cond, extra) {
   else { fail++; console.log('  FAIL  ' + name + (extra ? ' — ' + extra : '')); }
 }
 function todayStr() {
-  const d = new Date();
-  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  // "Hari ini" dalam WIB — harus sama dengan todayLocal() server; memakai
+  // tanggal lokal VM (UTC) akan salah pada 00:00–07:00 WIB.
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 }
 
 class Jar {
@@ -221,11 +222,11 @@ async function waitUp() {
     check('app.js: ekspor SO ke /api/so/export', r.text.includes('/api/so/export'));
     check('app.js: simpan SO ke POST /api/so', r.text.includes("'/api/so'"));
     check('app.js: tombol nav SO disembunyikan untuk non-Admin', r.text.includes('button[data-view="so"]') && r.text.includes("IS_ADMIN ? '' : 'none'"));
-    check('app.js: penjaga view SO (toast + alih ke dashboard)', r.text.includes('Menu SO hanya untuk Admin') && r.text.includes("(name === 'so' || name === 'history') && !IS_ADMIN"));
+    check('app.js: penjaga view SO (toast + alih ke dashboard)', r.text.includes('Menu SO hanya untuk Admin') && r.text.includes("(name === 'so' || name === 'history' || name === 'supplier') && !IS_ADMIN"));
     check('app.js: tombol nav Riwayat disembunyikan untuk non-Admin', r.text.includes('button[data-view="history"]') && r.text.includes("IS_ADMIN ? '' : 'none'"));
     check('app.js: penjaga view Riwayat (toast + alih ke dashboard)', r.text.includes('Menu Riwayat hanya untuk Admin'));
     check('app.js: bagian Sparepart keluar Dashboard disembunyikan untuk non-Admin', r.text.includes("$('#dash-out-section').style.display = IS_ADMIN") && r.text.includes("$('#dash-date-row').style.display = IS_ADMIN"));
-    check('app.js: loadOutHistory hanya dipanggil untuk Admin', r.text.includes('if (IS_ADMIN) loadOutHistory()'));
+    check('app.js: loadOutHistory hanya dipanggil untuk Admin', r.text.includes('if (IS_ADMIN) { loadOutHistory(); loadSupplierAlert(); }'));
     check('app.js: tombol Cetak QR Inventaris disembunyikan untuk non-Admin', r.text.includes("$('#btn-print-qr').style.display = IS_ADMIN"));
     check('app.js: tombol Cetak di kartu QR detail hanya Admin', r.text.includes("IS_ADMIN ? '<button class=\"btn\" id=\"btn-print-qr-one\">"));
     check('app.js: Unduh PNG QR tetap untuk semua peran', r.text.includes('⬇ Unduh PNG'));
@@ -233,6 +234,60 @@ async function waitUp() {
     check('GET /api/items/:id/qr tetap 200 untuk User (tampilan QR tidak rusak)', r.status === 200 && (r.headers.get('content-type') || '').includes('image/png') && r.buf.length > 100, 'status=' + r.status + ' len=' + (r.buf && r.buf.length));
     r = await admin.req('/style.css');
     check('style.css: badge hijau', r.text.includes('.badge.green'));
+    console.log('== 10. Simpan dengan tanggal pilihan + tanggal WIB ==');
+    const pastDate = '2026-11-20';
+    r = await admin.req('/api/so');
+    check('GET /api/so tanpa tanggal = hari ini (WIB)', r.status === 200 && r.json.date === today, 'date=' + r.json.date + ' wib=' + today);
+    r = await admin.j('/api/so', { itemId: idA, counted: 3, date: pastDate });
+    check('simpan SO dengan tanggal pilihan: record.date = tanggal itu', r.status === 200 && r.json.record.date === pastDate, JSON.stringify(r.json).slice(0, 200));
+    const recPast1 = r.json.record.id;
+    r = await admin.j('/api/so', { itemId: idA, counted: 4, date: pastDate });
+    check('simpan 2x barang sama di tanggal sama: baris kedua, bukan menimpa', r.status === 200 && r.json.record.date === pastDate && r.json.record.id !== recPast1, JSON.stringify(r.json).slice(0, 200));
+    const recPast2 = r.json.record.id;
+    r = await admin.req('/api/so?date=' + pastDate);
+    const pastRows = (r.json.records || []).filter((x) => x.item_id === idA);
+    check('GET tanggal pilihan: 2 catatan barang A', r.status === 200 && pastRows.length === 2, 'n=' + pastRows.length);
+    check('kedua catatan tanggal pilihan memuat SO 3 dan 4', pastRows.some((x) => x.counted === 3) && pastRows.some((x) => x.counted === 4), JSON.stringify(pastRows));
+    r = await admin.req('/api/so?date=' + today);
+    check('GET hari ini: tidak ada catatan tanggal pilihan', !(r.json.records || []).some((x) => x.date === pastDate), 'n=' + r.json.records.length);
+    r = await admin.req('/api/so/export?date=' + pastDate);
+    const wbPast = XLSX.read(r.buf, { type: 'buffer' });
+    const rowsPast = XLSX.utils.sheet_to_json(wbPast.Sheets[wbPast.SheetNames[0]], { header: 1 });
+    check('ekspor tanggal pilihan: memuat SO 3 dan SO 4 yang baru disimpan',
+      rowsPast.some((x) => x && x[0] === 'FD013610' && x[3] === 3) && rowsPast.some((x) => x && x[0] === 'FD013610' && x[3] === 4),
+      JSON.stringify(rowsPast.slice(0, 6)));
+    check('ekspor tanggal pilihan: nama file pakai tanggal pilihan', (r.headers.get('content-disposition') || '').includes('stock-opname-' + pastDate + '.xlsx'), r.headers.get('content-disposition'));
+    r = await admin.req('/api/so/export?date=' + today);
+    const wbToday = XLSX.read(r.buf, { type: 'buffer' });
+    const rowsToday = XLSX.utils.sheet_to_json(wbToday.Sheets[wbToday.SheetNames[0]], { header: 1 });
+    check('ekspor hari ini: tidak memuat catatan tanggal pilihan',
+      !rowsToday.some((x) => x && x[0] === 'FD013610' && (x[3] === 3 || x[3] === 4)), JSON.stringify(rowsToday.slice(0, 6)));
+    r = await admin.j('/api/so', { itemId: idA, counted: 5, date: '20-11-2026' });
+    check('tanggal format tak valid: jatuh ke hari ini (WIB), bukan error', r.status === 200 && r.json.record.date === today, JSON.stringify(r.json).slice(0, 200));
+    // adjust pada catatan bertanggal lampau: koreksi masuk kartu stok di tanggal SO-nya
+    r = await admin.j('/api/items', { name: 'SELANG SO', fd_code: 'FD013614', stock: 20, unit: 'PCS' });
+    check('buat barang E FD013614 stok 20', r.status === 200 && r.json.id, JSON.stringify(r.json).slice(0, 120));
+    const idE = r.json.id;
+    r = await admin.j('/api/so', { itemId: idE, counted: 18, date: pastDate });
+    check('SO barang E tanggal pilihan (18 vs 20): diff -2', r.status === 200 && r.json.record.diff === -2 && r.json.record.date === pastDate, JSON.stringify(r.json).slice(0, 200));
+    const recE = r.json.record.id;
+    r = await admin.j('/api/so/' + recE + '/adjust', {});
+    check('adjust barang E (stok 20 -> 18)', r.status === 200 && r.json.balance === 18, JSON.stringify(r.json));
+    r = await admin.req('/api/items/' + idE);
+    const dayPast = (r.json.card || []).find((g) => g.date === pastDate);
+    check('kartu stok E: koreksi "Opname (SO)" tercatat di tanggal SO (bukan hari ini)',
+      !!dayPast && dayPast.rows.some((m) => m.note === 'Opname (SO)' && m.kind === 'out' && m.qty === 2),
+      JSON.stringify(r.json.card).slice(0, 400));
+    check('kartu stok E: tidak ada koreksi Opname (SO) di hari ini',
+      !(r.json.card || []).some((g) => g.date === today && g.rows.some((m) => m.note === 'Opname (SO)')),
+      JSON.stringify(r.json.card).slice(0, 400));
+
+    console.log('== 11. Frontend: simpan kirim tanggal + jam WIB ==');
+    r = await admin.req('/app.js');
+    check('app.js: simpan SO mengirim date dari date picker', r.text.includes("date: $('#so-date').value"));
+    check('app.js: timeOf menampilkan jam WIB (geser +7 jam dari UTC)', r.text.includes('7 * 3600 * 1000') && r.text.includes('function timeOf'));
+    r = await admin.req('/sw.js');
+    check('sw.js: CACHE v7', r.text.includes("gudang-sparepart-v7"));
   } finally {
     server.kill();
     await new Promise((r) => setTimeout(r, 500));

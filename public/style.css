@@ -112,6 +112,7 @@ label small { font-weight: 400; color: var(--muted); }
   padding: 12px 14px; width: 100%; text-align: left; color: var(--text);
 }
 .row:active { background: var(--surface-muted); }
+.row.selected { outline: 2px solid var(--accent); background: var(--accent-soft); }
 .row .r-name { font-weight: 700; }
 .row .r-sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
 .row .r-stock { float: right; font-weight: 800; font-size: 18px; }

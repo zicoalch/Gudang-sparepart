@@ -60,6 +60,7 @@
         <button data-view="inventory">🗂 Inventaris</button>
         <button data-view="take">📤 Ambil</button>
         <button data-view="loan">🤝 Pinjam</button>
+        <button data-view="supplier">🏭 Supplier</button>
         <button data-view="so">📋 SO</button>
         <button data-view="history">🕘 Riwayat</button>
         <button data-view="account">👤 Akun</button>
@@ -81,6 +82,7 @@
       <p class="muted small">🗄 <span id="st-racks">0</span> rak terpakai &nbsp;•&nbsp; 📦 <span id="st-boxes">0</span> jolly box terpakai</p>
 
       <div id="dash-loan-alert" class="warn-box hidden" style="cursor:pointer" role="button" tabindex="0"></div>
+      <div id="dash-supplier-alert" class="warn-box hidden" style="cursor:pointer" role="button" tabindex="0"></div>
 
       <div class="date-row" id="dash-date-row">
         <label for="dash-date">Tanggal</label>
@@ -281,13 +283,22 @@
       <div id="loan-alert" class="warn-box hidden"></div>
 
       <div class="card form">
-        <label>Kode FD / Barcode
-          <span class="input-row">
-            <input id="loan-code" placeholder="Ketik kode FD / barcode lalu Enter" autocomplete="off">
-            <button type="button" class="btn btn-primary" id="btn-scan-loan">📷 Scan</button>
-          </span>
+        <h3>🔧 Daftar Tools</h3>
+        <p class="muted small">Tools diinput manual berdasarkan nama saja — tanpa kode. Pilih dari daftar saat meminjam.</p>
+        <span class="input-row">
+          <input id="tool-name" placeholder="Nama tools baru, mis. Kunci Pas 14" autocomplete="off">
+          <button type="button" class="btn btn-primary" id="btn-add-tool">➕ Tambah Tools</button>
+        </span>
+        <p id="tool-error" class="error hidden"></p>
+        <div id="tool-list" class="list"></div>
+      </div>
+
+      <div class="card form">
+        <label>Cari tools
+          <input id="loan-tool-search" placeholder="Ketik nama tools…" autocomplete="off">
         </label>
-        <div id="loan-item" class="hidden"></div>
+        <div id="loan-tool-list" class="list"></div>
+        <div id="loan-tool-selected" class="hidden"></div>
         <div id="loan-fields" class="hidden">
           <div class="grid2">
             <label>Jumlah (pcs) *
@@ -331,6 +342,91 @@
         </select>
       </div>
       <div id="loan-list" class="list"></div>
+    </section>
+
+    <!-- PEMINJAMAN DIBAWA SUPPLIER (KHUSUS ADMIN) -->
+    <section id="view-supplier" class="view hidden">
+      <h2>🏭 Peminjaman Supplier</h2>
+      <p class="muted">Part dibawa supplier untuk <b>contoh</b> atau <b>service</b> — diingatkan bila belum kembali melewati batas hari di bawah. Foto bukti pengembalian wajib. Stok berkurang selama dibawa (kecuali part non-stok).</p>
+
+      <div id="supplier-alert" class="warn-box hidden"></div>
+
+      <div class="card form">
+        <label>Pengingat setelah
+          <span class="input-row">
+            <input id="supplier-reminder-days" type="number" min="1" max="30" value="2" style="max-width:90px">
+            <span>hari</span>
+            <button type="button" class="btn btn-primary" id="btn-save-supplier-reminder">💾 Simpan</button>
+          </span>
+        </label>
+        <p class="muted small">Berlaku untuk semua pinjaman supplier yang masih aktif — jatuh tempo dihitung ulang otomatis.</p>
+        <p id="supplier-reminder-error" class="error hidden"></p>
+      </div>
+
+      <div class="card form">
+        <label>Kode FD / Barcode
+          <span class="input-row">
+            <input id="supplier-code" placeholder="Ketik kode FD / barcode lalu Enter" autocomplete="off">
+            <button type="button" class="btn btn-primary" id="btn-scan-supplier">📷 Scan</button>
+          </span>
+        </label>
+        <div id="supplier-item" class="hidden"></div>
+        <div id="supplier-manual" class="hidden">
+          <p class="warn-box">⚠️ Kode tidak ada di stok — dicatat sebagai part non-stok (tanpa mengubah stok).</p>
+          <label>Nama part (manual) *
+            <input id="supplier-manual-name" placeholder="Nama part yang dibawa supplier" autocomplete="off">
+          </label>
+        </div>
+        <div id="supplier-fields" class="hidden">
+          <div class="grid2">
+            <label>Jumlah (pcs) *
+              <input id="supplier-qty" type="number" min="1" value="1" required>
+            </label>
+            <label>Nama supplier *
+              <input id="supplier-name" placeholder="Nama supplier" autocomplete="off">
+            </label>
+          </div>
+          <label>Tujuan *
+            <select id="supplier-purpose">
+              <option value="contoh">Contoh</option>
+              <option value="service">Service</option>
+            </select>
+          </label>
+          <button class="btn btn-primary btn-block" id="btn-save-supplier">💾 Simpan peminjaman</button>
+        </div>
+        <p id="supplier-error" class="error hidden"></p>
+      </div>
+
+      <div id="return-box-supplier" class="card form hidden">
+        <h3>✅ Kembalikan — <span id="return-supplier-name"></span></h3>
+        <div class="photo-box">
+          <img id="return-supplier-photo-preview" class="hidden" alt="Foto bukti pengembalian">
+          <div class="photo-actions">
+            <label class="btn">📷 Foto bukti <input type="file" id="return-supplier-photo-camera" accept="image/*" capture="environment" class="hidden"></label>
+            <label class="btn">🖼 Dari galeri <input type="file" id="return-supplier-photo-gallery" accept="image/*" class="hidden"></label>
+            <button type="button" class="btn hidden" id="btn-return-supplier-photo-remove">Hapus foto</button>
+          </div>
+          <p class="muted small">Foto bukti wajib — tombol simpan aktif setelah foto dipilih. Foto dikecilkan otomatis (maks 1024px, ~500 KB).</p>
+          <p id="return-supplier-photo-error" class="error hidden"></p>
+        </div>
+        <button class="btn btn-primary btn-block" id="btn-save-return-supplier" disabled>💾 Simpan pengembalian</button>
+        <button class="btn btn-block" id="btn-cancel-return-supplier">Batal</button>
+      </div>
+
+      <h3>Part yang sedang dibawa</h3>
+      <div id="supplier-active" class="list"></div>
+
+      <h3>History peminjaman supplier</h3>
+      <div class="toolbar">
+        <select id="supplier-filter">
+          <option value="all">Semua</option>
+          <option value="dibawa">Dibawa</option>
+          <option value="dikembalikan">Dikembalikan</option>
+          <option value="tidak_kembali">Tidak kembali</option>
+          <option value="terlambat">Terlambat</option>
+        </select>
+      </div>
+      <div id="supplier-list" class="list"></div>
     </section>
 
     <!-- STOCK OPNAME -->

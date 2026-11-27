@@ -2,7 +2,7 @@
 // Data stok tetap diambil dari server (tidak di-cache).
 // PENTING: naikkan versi CACHE setiap kali index.html / app.js / style.css
 // berubah, supaya HP user tidak terus menampilkan shell lama dari cache.
-const CACHE = 'gudang-sparepart-v5';
+const CACHE = 'gudang-sparepart-v7';
 const SHELL = ['/', '/index.html', '/style.css', '/app.js', '/manifest.webmanifest',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png'];
 
