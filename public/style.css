@@ -24,6 +24,7 @@ body {
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
 .error { color: var(--danger); font-weight: 600; }
+.warn-box { display: block; background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 10px; padding: 10px 12px; margin-top: 8px; font-size: 14px; line-height: 1.45; }
 a { color: var(--accent); }
 h1 { font-size: 24px; margin: 0 0 4px; }
 h2 { font-size: 20px; margin: 18px 0 8px; }

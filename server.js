@@ -379,7 +379,8 @@ app.get('/api/items', requireAuth, (req, res) => {
 app.get('/api/items/lookup', requireAuth, (req, res) => {
   const code = cleanStr(req.query.code || '');
   if (!code) return fail(res, 400, 'Kode kosong.');
-  const row = db.prepare('SELECT * FROM items WHERE fd_code = ? OR barcode = ? LIMIT 1').get(code, code);
+  // cocokkan tanpa peduli huruf besar/kecil (dipakai Ambil/SO + cek duplikat Kode FD di form)
+  const row = db.prepare('SELECT * FROM items WHERE UPPER(fd_code) = UPPER(?) OR UPPER(barcode) = UPPER(?) LIMIT 1').get(code, code);
   if (!row) return fail(res, 404, 'Barang dengan kode "' + code + '" tidak ditemukan.');
   ok(res, { item: itemRow(row) });
 });

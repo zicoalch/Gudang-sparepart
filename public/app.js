@@ -301,6 +301,9 @@ $('#btn-add-from-inv').addEventListener('click', openAddForm);
 
 // ---------- tambah / ubah ----------
 let addPhotoData = ''; // base64 data URI (sudah dikecilkan)
+let fdDupItem = null; // barang lain yang Kode FD-nya sama (peringatan duplikat)
+let fdCheckSeq = 0;   // penanda urutan cek, supaya hasil basi tidak menimpa hasil baru
+let fdCheckTimer = null;
 function openAddForm() {
   if (!IS_ADMIN) { toast('Hanya Admin yang boleh menambah sparepart.'); return; }
   resetAddForm();
@@ -315,9 +318,44 @@ function resetAddForm() {
   $('#add-photo-preview').src = '';
   $('#btn-photo-remove').classList.add('hidden');
   $('#photo-error').classList.add('hidden');
+  fdDupItem = null;
+  $('#add-fd-warning').classList.add('hidden');
+  $('#add-fd-warning').innerHTML = '';
   $('#add-stock').value = '0';
   $('#add-unit').value = 'PCS';
 }
+// Peringatan Kode FD duplikat: cek apakah ada barang LAIN dengan Kode FD yang sama
+// (abaikan huruf besar/kecil + spasi ujung). Mengembalikan barang yang cocok, atau null.
+// Di form Ubah, kode milik barang yang sedang diedit sendiri tidak dihitung duplikat.
+async function checkFdDuplicate() {
+  const code = $('#add-fd').value.trim();
+  const warnEl = $('#add-fd-warning');
+  const seq = ++fdCheckSeq;
+  fdDupItem = null;
+  warnEl.classList.add('hidden');
+  warnEl.innerHTML = '';
+  if (!code) return null;
+  let item = null;
+  try {
+    const r = await api('/api/items/lookup?code=' + encodeURIComponent(code));
+    item = r.item;
+  } catch (e) { return null; } // 404 = kode belum dipakai
+  if (seq !== fdCheckSeq) return null; // hasil basi (user sudah mengetik kode lain)
+  const editingId = $('#add-id').value;
+  if (editingId && item.id === parseInt(editingId, 10)) return null; // kode milik sendiri
+  fdDupItem = item;
+  warnEl.innerHTML = '⚠️ Kode FD sudah dipakai: <b>' + esc(item.name) + '</b> — stok ' + fmt(item.stock) + ', rak ' + esc(item.rack || '-') + '. Kalau ini barang yang sama, pakai \'Ubah data\' atau impor Excel (mode update), jangan tambah baru.';
+  warnEl.classList.remove('hidden');
+  return item;
+}
+$('#add-fd').addEventListener('input', () => {
+  clearTimeout(fdCheckTimer);
+  fdCheckTimer = setTimeout(() => { checkFdDuplicate(); }, 400);
+});
+$('#add-fd').addEventListener('blur', () => {
+  clearTimeout(fdCheckTimer);
+  checkFdDuplicate();
+});
 $('#add-name').addEventListener('input', (e) => {
   const pos = e.target.selectionStart;
   e.target.value = e.target.value.toUpperCase();
@@ -376,6 +414,15 @@ $('#add-photo-gallery').addEventListener('change', (e) => handlePhotoFile(e.targ
 
 $('#form-add').addEventListener('submit', async (e) => {
   e.preventDefault();
+  // cek duplikat segar sebelum simpan (jaga-jaga bila user mengetik lalu langsung Simpan)
+  const dup = await checkFdDuplicate();
+  if (dup) {
+    const code = $('#add-fd').value.trim();
+    const msg = $('#add-id').value
+      ? 'Kode FD ' + code + ' sudah dipakai oleh ' + dup.name + '. Tetap simpan perubahan ini?'
+      : 'Kode FD ' + code + ' sudah dipakai oleh ' + dup.name + '. Tetap simpan sebagai barang baru?';
+    if (!confirm(msg)) return;
+  }
   const btn = $('#btn-save-item');
   btn.disabled = true; btn.textContent = 'Menyimpan…';
   const id = $('#add-id').value;
