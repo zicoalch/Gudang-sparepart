@@ -548,14 +548,14 @@ function soRecordById(id) {
     FROM so_records s JOIN items i ON i.id = s.item_id WHERE s.id = ?`).get(id);
 }
 
-app.get('/api/so', requireAuth, (req, res) => {
+app.get('/api/so', requireAuth, requireAdmin, (req, res) => {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : todayLocal();
   const rows = db.prepare(`SELECT s.*, i.name AS item_name, i.fd_code, i.stock AS current_stock
     FROM so_records s JOIN items i ON i.id = s.item_id WHERE s.date = ? ORDER BY s.created_at DESC, s.id DESC`).all(date);
   ok(res, { date, records: rows.map(soRow) });
 });
 
-app.post('/api/so', requireAuth, (req, res) => {
+app.post('/api/so', requireAuth, requireAdmin, (req, res) => {
   const countedRaw = req.body.counted;
   const counted = typeof countedRaw === 'number' ? countedRaw : Number(String(countedRaw == null ? '' : countedRaw).trim());
   if (countedRaw === undefined || countedRaw === null || String(countedRaw).trim() === '' || !Number.isInteger(counted) || counted < 0) {
@@ -580,8 +580,8 @@ app.post('/api/so', requireAuth, (req, res) => {
   ok(res, { record: soRow(rec), item: itemRow(item) });
 });
 
-// ekspor Excel catatan SO — semua peran yang login boleh (hanya baca)
-app.get('/api/so/export', requireAuth, (req, res) => {
+// ekspor Excel catatan SO — Admin saja
+app.get('/api/so/export', requireAuth, requireAdmin, (req, res) => {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : todayLocal();
   const rows = db.prepare(`SELECT s.*, i.name AS item_name, i.fd_code FROM so_records s
     JOIN items i ON i.id = s.item_id WHERE s.date = ? ORDER BY s.created_at ASC, s.id ASC`).all(date);
@@ -628,7 +628,7 @@ app.post('/api/so/:id/adjust', requireAuth, requireAdmin, (req, res) => {
 });
 
 // ---------- history ----------
-app.get('/api/out-history', requireAuth, (req, res) => {
+app.get('/api/out-history', requireAuth, requireAdmin, (req, res) => {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : todayLocal();
   const rows = db.prepare(`SELECT m.*, i.name AS item_name, i.fd_code FROM moves m
     JOIN items i ON i.id = m.item_id WHERE m.kind = 'out' AND m.date = ? ORDER BY m.id ASC`).all(date);
@@ -636,8 +636,8 @@ app.get('/api/out-history', requireAuth, (req, res) => {
   ok(res, { date, total, rows });
 });
 
-// ekspor Excel history pengambilan (keluar) — semua peran yang login boleh (hanya baca)
-app.get('/api/history/export', requireAuth, (req, res) => {
+// ekspor Excel history pengambilan (keluar) — Admin saja
+app.get('/api/history/export', requireAuth, requireAdmin, (req, res) => {
   const date = req.query.date || '';
   let rows, label;
   if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -670,7 +670,7 @@ app.get('/api/history/export', requireAuth, (req, res) => {
   res.send(buf);
 });
 
-app.get('/api/history', requireAuth, (req, res) => {
+app.get('/api/history', requireAuth, requireAdmin, (req, res) => {
   const date = req.query.date || '';
   if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     // ringkasan harian: per barang — total masuk, total keluar, stok akhir hari

@@ -66,6 +66,11 @@ function apiJSON(path, body, method) {
 
 // ---------- navigasi ----------
 function showView(name) {
+  if ((name === 'so' || name === 'history') && !IS_ADMIN) {
+    toast(name === 'so' ? 'Menu SO hanya untuk Admin.' : 'Menu Riwayat hanya untuk Admin.');
+    if (currentView !== 'dashboard') showView('dashboard');
+    return;
+  }
   currentView = name;
   $$('.view').forEach((v) => v.classList.add('hidden'));
   const el = $('#view-' + name);
@@ -141,6 +146,11 @@ function enterApp(me) {
   $('#menu-add').style.display = IS_ADMIN ? '' : 'none';
   $('#btn-add-from-inv').style.display = IS_ADMIN ? '' : 'none';
   $('#btn-open-import').style.display = IS_ADMIN ? '' : 'none';
+  $$('#topnav button[data-view="so"]').forEach((b) => { b.style.display = IS_ADMIN ? '' : 'none'; });
+  $$('#topnav button[data-view="history"]').forEach((b) => { b.style.display = IS_ADMIN ? '' : 'none'; });
+  $('#btn-print-qr').style.display = IS_ADMIN ? '' : 'none';
+  $('#dash-out-section').style.display = IS_ADMIN ? '' : 'none';
+  $('#dash-date-row').style.display = IS_ADMIN ? '' : 'none';
   $('#dash-date').value = localDate();
   $('#so-date').value = localDate();
   showView('dashboard');
@@ -170,7 +180,7 @@ async function loadDashboard() {
     $('#st-racks').textContent = fmt(s.racks);
     $('#st-boxes').textContent = fmt(s.boxes);
   } catch (e) { /* diam */ }
-  loadOutHistory();
+  if (IS_ADMIN) loadOutHistory();
 }
 async function loadOutHistory() {
   const date = $('#dash-date').value || localDate();
@@ -416,7 +426,7 @@ async function openDetail(id, back) {
         + '<img class="qr-img" src="/api/items/' + it.id + '/qr" alt="QR ' + esc(qrCode) + '">'
         + '<p><b>' + esc(it.name) + '</b><br><span class="muted">' + esc(qrCode) + '</span></p>'
         + '<p><a class="btn" href="/api/items/' + it.id + '/qr" download="qr-' + esc(qrCode) + '.png">⬇ Unduh PNG</a> '
-        + '<button class="btn" id="btn-print-qr-one">🖨 Cetak</button></p>'
+        + (IS_ADMIN ? '<button class="btn" id="btn-print-qr-one">🖨 Cetak</button>' : '') + '</p>'
         + '<p class="muted small">Scan QR ini di tab Ambil untuk langsung memilih barang.</p></div>';
     } else {
       html += '<div class="card qr-box"><h3>QR Code</h3>'

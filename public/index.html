@@ -79,7 +79,7 @@
       </div>
       <p class="muted small">🗄 <span id="st-racks">0</span> rak terpakai &nbsp;•&nbsp; 📦 <span id="st-boxes">0</span> jolly box terpakai</p>
 
-      <div class="date-row">
+      <div class="date-row" id="dash-date-row">
         <label for="dash-date">Tanggal</label>
         <input type="date" id="dash-date">
       </div>
@@ -99,10 +99,12 @@
         </button>
       </div>
 
-      <h2>Sparepart keluar — <span id="out-date-label"></span></h2>
-      <p class="muted">Total keluar hari itu: <b id="out-total">0</b> unit</p>
-      <p><button class="btn btn-small" id="btn-export-out">⬇ Ekspor Excel history hari ini</button></p>
-      <div id="out-list" class="list"></div>
+      <div id="dash-out-section">
+        <h2>Sparepart keluar — <span id="out-date-label"></span></h2>
+        <p class="muted">Total keluar hari itu: <b id="out-total">0</b> unit</p>
+        <p><button class="btn btn-small" id="btn-export-out">⬇ Ekspor Excel history hari ini</button></p>
+        <div id="out-list" class="list"></div>
+      </div>
     </section>
 
     <!-- INVENTARIS -->

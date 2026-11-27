@@ -85,8 +85,10 @@ async function waitUp() {
     check('SO cocok (5 vs 5): diff 0 status Sesuai', r.status === 200 && r.json.record.diff === 0 && r.json.record.status === 'Sesuai' && r.json.record.system_stock === 5, JSON.stringify(r.json).slice(0, 200));
     const recA = r.json.record.id;
     r = await user.j('/api/so', { code: 'FD013611', counted: 12 });
+    check('SO oleh User DITOLAK (403)', r.status === 403, 'status=' + r.status + ' ' + JSON.stringify(r.json));
+    r = await admin.j('/api/so', { code: 'FD013611', counted: 12 });
     check('SO selisih + (12 vs 10): diff +2 status Selisih', r.status === 200 && r.json.record.diff === 2 && r.json.record.status === 'Selisih' && r.json.record.system_stock === 10, JSON.stringify(r.json).slice(0, 200));
-    check('SO oleh User tercatat username budi', r.json.record.username === 'budi', 'username=' + r.json.record.username);
+    check('SO oleh Admin tercatat username zico', r.json.record.username === 'zico', 'username=' + r.json.record.username);
     const recB = r.json.record.id;
     r = await admin.j('/api/so', { code: 'FD013612', counted: 0 });
     check('SO counted 0 boleh (0 vs 0): diff 0 Sesuai', r.status === 200 && r.json.record.diff === 0 && r.json.record.status === 'Sesuai', JSON.stringify(r.json).slice(0, 200));
@@ -97,6 +99,34 @@ async function waitUp() {
     r = await admin.j('/api/so', { itemId: idD, counted: 6 });
     check('SO selisih - (6 vs 8): diff -2 Selisih', r.status === 200 && r.json.record.diff === -2 && r.json.record.status === 'Selisih', JSON.stringify(r.json).slice(0, 200));
     const recD = r.json.record.id;
+
+    console.log('== 3b. User DITOLAK di semua endpoint SO ==');
+    r = await user.req('/api/so?date=' + today);
+    check('GET /api/so oleh User -> 403', r.status === 403, 'status=' + r.status);
+    r = await user.j('/api/so', { code: 'FD013610', counted: 1 });
+    check('POST /api/so oleh User -> 403', r.status === 403, 'status=' + r.status);
+    r = await user.req('/api/so/export?date=' + today);
+    check('GET /api/so/export oleh User -> 403', r.status === 403, 'status=' + r.status);
+    r = await user.j('/api/so/' + recB + '/adjust', {});
+    check('POST /api/so/:id/adjust oleh User -> 403', r.status === 403, 'status=' + r.status);
+
+    console.log('== 3c. History keluar disembunyikan dari User ==');
+    r = await admin.j('/api/take', { itemId: idA, qty: 1, machine: 'BLOWMOULD', takenBy: 'zico' });
+    check('Admin ambil 1 unit barang A (stok 5 -> 4)', r.status === 200 && r.json.balance === 4, JSON.stringify(r.json));
+    r = await user.req('/api/takes/recent');
+    check('GET /api/takes/recent tetap 200 untuk User (Ambil tidak rusak)', r.status === 200 && Array.isArray(r.json.takes) && r.json.takes.length >= 1, JSON.stringify(r.json).slice(0, 200));
+    r = await admin.req('/api/out-history?date=' + today);
+    check('GET /api/out-history oleh Admin: 200, total 1', r.status === 200 && r.json.total === 1, 'total=' + (r.json && r.json.total));
+    r = await user.req('/api/out-history?date=' + today);
+    check('GET /api/out-history oleh User -> 403', r.status === 403, 'status=' + r.status);
+    r = await admin.req('/api/history');
+    check('GET /api/history oleh Admin: 200 mode recent', r.status === 200 && r.json.mode === 'recent', 'mode=' + (r.json && r.json.mode));
+    r = await user.req('/api/history');
+    check('GET /api/history oleh User -> 403', r.status === 403, 'status=' + r.status);
+    r = await admin.req('/api/history/export?date=' + today);
+    check('GET /api/history/export oleh Admin: 200 + xlsx', r.status === 200 && (r.headers.get('content-type') || '').includes('sheet'), 'status=' + r.status);
+    r = await user.req('/api/history/export?date=' + today);
+    check('GET /api/history/export oleh User -> 403', r.status === 403, 'status=' + r.status);
 
     console.log('== 4. Validasi SO ==');
     r = await admin.j('/api/so', { code: 'TIDAKADA', counted: 1 });
@@ -119,15 +149,15 @@ async function waitUp() {
     check('list hari ini: 5 catatan', r.status === 200 && r.json.records.length === 5, 'n=' + (r.json.records && r.json.records.length) + ' date=' + r.json.date);
     const byId = {};
     for (const x of (r.json.records || [])) byId[x.id] = x;
-    check('list memuat fd_code + stok sistem + username', byId[recB] && byId[recB].fd_code === 'FD013611' && byId[recB].system_stock === 10 && byId[recB].username === 'budi', JSON.stringify(byId[recB]));
+    check('list memuat fd_code + stok sistem + username', byId[recB] && byId[recB].fd_code === 'FD013611' && byId[recB].system_stock === 10 && byId[recB].username === 'zico', JSON.stringify(byId[recB]));
     r = await admin.req('/api/so');
     check('list tanpa tanggal = hari ini', r.status === 200 && r.json.date === today && r.json.records.length === 5, 'date=' + r.json.date);
     r = await admin.req('/api/so?date=2000-01-01');
     check('list tanggal kosong: 0 catatan', r.status === 200 && r.json.records.length === 0, 'n=' + r.json.records.length);
 
     console.log('== 6. Ekspor Excel SO ==');
-    r = await user.req('/api/so/export?date=' + today);
-    check('ekspor oleh User: 200 + xlsx', r.status === 200 && (r.headers.get('content-type') || '').includes('sheet') && r.buf.length > 1000, 'status=' + r.status + ' len=' + (r.buf && r.buf.length));
+    r = await admin.req('/api/so/export?date=' + today);
+    check('ekspor oleh Admin: 200 + xlsx', r.status === 200 && (r.headers.get('content-type') || '').includes('sheet') && r.buf.length > 1000, 'status=' + r.status + ' len=' + (r.buf && r.buf.length));
     check('nama file stock-opname-<tanggal>.xlsx', (r.headers.get('content-disposition') || '').includes('stock-opname-' + today + '.xlsx'), r.headers.get('content-disposition'));
     const wb = XLSX.read(r.buf, { type: 'buffer' });
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1 });
@@ -135,7 +165,7 @@ async function waitUp() {
     check('header: Kode FD, Nama, Stok Sistem, Jumlah SO, Selisih, Status, Waktu, Diinput oleh',
       !!hdr && hdr[1] === 'Nama Sparepart' && hdr[2] === 'Stok Sistem' && hdr[3] === 'Jumlah SO' && hdr[4] === 'Selisih' && hdr[5] === 'Status' && hdr[6] === 'Waktu' && hdr[7] === 'Diinput oleh', JSON.stringify(hdr));
     const rowB = rows.find((x) => x && x[0] === 'FD013611' && x[3] === 12);
-    check('baris B: sistem 10, SO 12, selisih 2, status Selisih, oleh budi', !!rowB && rowB[2] === 10 && rowB[4] === 2 && rowB[5] === 'Selisih' && rowB[7] === 'budi', JSON.stringify(rowB));
+    check('baris B: sistem 10, SO 12, selisih 2, status Selisih, oleh zico', !!rowB && rowB[2] === 10 && rowB[4] === 2 && rowB[5] === 'Selisih' && rowB[7] === 'zico', JSON.stringify(rowB));
     const rowA = rows.find((x) => x && x[0] === 'FD013610');
     check('baris A: selisih 0, status Sesuai', !!rowA && rowA[4] === 0 && rowA[5] === 'Sesuai', JSON.stringify(rowA));
     r = await admin.req('/api/so/export');
@@ -182,6 +212,7 @@ async function waitUp() {
     check('index.html: view SO + date + ekspor', r.text.includes('id="view-so"') && r.text.includes('id="so-date"') && r.text.includes('btn-export-so'));
     check('index.html: input kode + scan + jumlah + simpan', r.text.includes('id="so-code"') && r.text.includes('btn-scan-so') && r.text.includes('id="so-counted"') && r.text.includes('btn-save-so'));
     check('index.html: daftar SO + label tanggal', r.text.includes('id="so-list"') && r.text.includes('id="so-date-label"'));
+    check('index.html: seksi dash-out-section + dash-date-row', r.text.includes('id="dash-out-section"') && r.text.includes('id="dash-date-row"'));
     r = await admin.req('/app.js');
     check('app.js: lookupSo + loadSo', r.text.includes('lookupSo') && r.text.includes('loadSo'));
     check('app.js: scan target so', r.text.includes("openScanner('so')") && r.text.includes("scanTarget === 'so'"));
@@ -189,6 +220,17 @@ async function waitUp() {
     check('app.js: tombol Sesuaikan stok hanya Admin + confirm', r.text.includes('Sesuaikan stok') && r.text.includes('IS_ADMIN') && r.text.includes("confirm('Sesuaikan stok"));
     check('app.js: ekspor SO ke /api/so/export', r.text.includes('/api/so/export'));
     check('app.js: simpan SO ke POST /api/so', r.text.includes("'/api/so'"));
+    check('app.js: tombol nav SO disembunyikan untuk non-Admin', r.text.includes('button[data-view="so"]') && r.text.includes("IS_ADMIN ? '' : 'none'"));
+    check('app.js: penjaga view SO (toast + alih ke dashboard)', r.text.includes('Menu SO hanya untuk Admin') && r.text.includes("(name === 'so' || name === 'history') && !IS_ADMIN"));
+    check('app.js: tombol nav Riwayat disembunyikan untuk non-Admin', r.text.includes('button[data-view="history"]') && r.text.includes("IS_ADMIN ? '' : 'none'"));
+    check('app.js: penjaga view Riwayat (toast + alih ke dashboard)', r.text.includes('Menu Riwayat hanya untuk Admin'));
+    check('app.js: bagian Sparepart keluar Dashboard disembunyikan untuk non-Admin', r.text.includes("$('#dash-out-section').style.display = IS_ADMIN") && r.text.includes("$('#dash-date-row').style.display = IS_ADMIN"));
+    check('app.js: loadOutHistory hanya dipanggil untuk Admin', r.text.includes('if (IS_ADMIN) loadOutHistory()'));
+    check('app.js: tombol Cetak QR Inventaris disembunyikan untuk non-Admin', r.text.includes("$('#btn-print-qr').style.display = IS_ADMIN"));
+    check('app.js: tombol Cetak di kartu QR detail hanya Admin', r.text.includes("IS_ADMIN ? '<button class=\"btn\" id=\"btn-print-qr-one\">"));
+    check('app.js: Unduh PNG QR tetap untuk semua peran', r.text.includes('⬇ Unduh PNG'));
+    r = await user.req('/api/items/' + idB + '/qr');
+    check('GET /api/items/:id/qr tetap 200 untuk User (tampilan QR tidak rusak)', r.status === 200 && (r.headers.get('content-type') || '').includes('image/png') && r.buf.length > 100, 'status=' + r.status + ' len=' + (r.buf && r.buf.length));
     r = await admin.req('/style.css');
     check('style.css: badge hijau', r.text.includes('.badge.green'));
   } finally {
