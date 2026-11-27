@@ -306,7 +306,7 @@ async function waitUp() {
     check('app.js: badge Terlambat + tombol Kembalikan + Tidak kembali', r.text.includes('⚠️ Terlambat') && r.text.includes('✅ Kembalikan') && r.text.includes('Tidak kembali'));
     check('app.js: simpan setting pengingat via PUT /api/settings/supplier-reminder-days', r.text.includes("'/api/settings/supplier-reminder-days'") && r.text.includes("'PUT'"));
     r = await admin.req('/sw.js');
-    check('sw.js: CACHE v10', r.text.includes('gudang-sparepart-v10'));
+    check('sw.js: CACHE v13', r.text.includes('gudang-sparepart-v13'));
   } finally {
     server.kill();
     await new Promise((r) => setTimeout(r, 500));

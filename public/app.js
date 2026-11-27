@@ -10,6 +10,7 @@ let takeItem = null;
 let soItem = null;
 let detailId = null, detailBack = 'dashboard';
 let loanDetailKind = 'loan', loanDetailBack = 'loan'; // detail peminjaman: 'loan' | 'supplier'
+let takeDetailBack = 'take'; // kembali dari detail catatan pengambilan
 let deferredPrompt = null;
 
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; });
@@ -74,7 +75,7 @@ function apiJSON(path, body, method) {
 // ---------- navigasi ----------
 function showView(name) {
   if ((name === 'so' || name === 'history' || name === 'supplier') && !IS_ADMIN) {
-    toast(name === 'so' ? 'Menu SO hanya untuk Admin.' : name === 'supplier' ? 'Menu Supplier hanya untuk Admin.' : 'Menu Riwayat hanya untuk Admin.');
+    toast(name === 'so' ? 'Menu Stock Opname hanya untuk Admin.' : name === 'supplier' ? 'Menu Supplier hanya untuk Admin.' : 'Menu Riwayat hanya untuk Admin.');
     if (currentView !== 'dashboard') showView('dashboard');
     return;
   }
@@ -82,7 +83,7 @@ function showView(name) {
   $$('.view').forEach((v) => v.classList.add('hidden'));
   const el = $('#view-' + name);
   if (el) el.classList.remove('hidden');
-  $$('#topnav button').forEach((b) => b.classList.toggle('active', b.dataset.view === name || (name === 'detail' && b.dataset.view === 'inventory') || (name === 'add' && b.dataset.view === 'inventory') || (name === 'loan-detail' && b.dataset.view === loanDetailKind)));
+  $$('#topnav button').forEach((b) => b.classList.toggle('active', b.dataset.view === name || (name === 'detail' && b.dataset.view === 'inventory') || (name === 'add' && b.dataset.view === 'inventory') || (name === 'loan-detail' && b.dataset.view === loanDetailKind) || (name === 'take-detail' && b.dataset.view === 'take')));
   window.scrollTo(0, 0);
   if (name === 'dashboard') loadDashboard();
   if (name === 'inventory') loadInventory();
@@ -569,7 +570,7 @@ async function openDetail(id, back) {
   } catch (e) { box.innerHTML = '<p class="error">' + esc(e.message) + '</p>'; }
 }
 $('#btn-back-detail').addEventListener('click', () => {
-  const back = ['dashboard', 'inventory', 'take', 'loan', 'supplier', 'history', 'photo-search'].includes(detailBack) ? detailBack : 'inventory';
+  const back = ['dashboard', 'inventory', 'take', 'take-detail', 'loan', 'supplier', 'history', 'photo-search'].includes(detailBack) ? detailBack : 'inventory';
   showView(back);
 });
 function fillEditForm(it) {
@@ -672,6 +673,10 @@ $('#btn-run-photo-search').addEventListener('click', async () => {
 let lastTakeQuery = '';
 function selectTakeItem(item) {
   takeItem = item;
+  // batalkan pencarian live yang masih tertunda/in-flight: responsnya tidak
+  // boleh menimpa pilihan yang baru saja dibuat
+  clearTimeout(takeLiveTimer);
+  takeLiveSeq++;
   // barang terpilih untuk teks ini: Enter/blur ulang dengan teks sama tidak
   // me-render ulang (dan tidak menyembunyikan field yang sudah tampil)
   lastTakeQuery = $('#take-code').value.trim();
@@ -684,43 +689,72 @@ function selectTakeItem(item) {
   $('#take-fields').classList.remove('hidden');
   $('#take-qty').focus();
 }
+// Pemilihan saran harus idempotent: di HP, satu ketukan bisa memicu
+// touchstart + mousedown + click sekaligus; ketukan kedua untuk barang yang
+// sama (yang sudah terpilih) tidak boleh mengulang apa pun.
+function pickTakeSuggestion(it) {
+  const cur = $('#take-code').value.trim();
+  if (takeItem && takeItem.id === it.id && cur === lastTakeQuery) return; // sudah terpilih
+  selectTakeItem(it);
+}
 function renderTakeSuggestions(items) {
   const box = $('#take-suggestions');
   // batasi 8 saran (server men-clamp perPage minimal 10, jadi cap ada di client)
   const shown = items.slice(0, 8);
+  // daftar yang sama persis (id + stok) sudah tampil: jangan render ulang,
+  // supaya tombol yang sedang diketuk tidak hancur diganti di tengah ketukan
+  const sig = shown.map((x) => x.id + ':' + x.stock).join(',');
+  if (box.dataset.suggestSig === sig && !box.classList.contains('hidden')) return;
+  box.dataset.suggestSig = sig;
   box.innerHTML = '<p class="muted small">Pilih barang berdasarkan nama:</p>' + shown.map((it) => '<button type="button" class="row" data-take-suggest="' + it.id + '">'
     + '<span class="r-stock">' + fmt(it.stock) + ' <small>' + esc(it.unit) + '</small></span>'
     + '<span class="r-name">' + esc(it.name) + '</span>'
     + '<div class="r-sub">' + esc(it.fd_code || it.barcode || '') + ' • Rak ' + esc(it.rack || '-') + ' • Shaf ' + esc(it.shelf || '-') + ' • Box ' + esc(it.jolly_box || '-') + '</div></button>').join('');
   box.classList.remove('hidden');
-  // mousedown (bukan click) + preventDefault: pemilihan jalan sebelum input
-  // kehilangan fokus, jadi daftar saran tidak sempat di-render ulang oleh
-  // event change lalu menghilangkan tombol yang sedang diketuk.
-  box.querySelectorAll('[data-take-suggest]').forEach((b) => b.addEventListener('mousedown', (e) => {
-    e.preventDefault();
-    const it = shown.find((x) => x.id === +b.dataset.takeSuggest);
-    if (it) selectTakeItem(it);
-  }));
+  // touchstart (HP) + mousedown (desktop) + click (fallback keyboard):
+  // ketiganya memanggil pick yang sama dan idempotent. preventDefault di
+  // touchstart/mousedown mencegah input kehilangan fokus sebelum pemilihan
+  // jalan (di HP, blur bisa memicu change -> lookupTake).
+  box.querySelectorAll('[data-take-suggest]').forEach((b) => {
+    const pick = (e) => {
+      e.preventDefault();
+      const it = shown.find((x) => x.id === +b.dataset.takeSuggest);
+      if (it) pickTakeSuggestion(it);
+    };
+    b.addEventListener('touchstart', pick, { passive: false });
+    b.addEventListener('mousedown', pick);
+    b.addEventListener('click', pick);
+  });
 }
 async function lookupTake() {
   const code = $('#take-code').value.trim();
   const errEl = $('#take-error');
+  // PENTING: guard ini HARUS dicek SEBELUM penyembunyian apa pun. Barang yang
+  // sudah terpilih untuk teks ini (mis. lewat ketuk saran) tidak boleh
+  // dihapus oleh Enter/blur susulan — dulu guard dicek setelah field
+  // disembunyikan + takeItem di-nol-kan, sehingga field Jumlah/Mesin/Nama
+  // pemakai kadang hilang begitu user mengetuk field Jumlah.
+  if (code && code === lastTakeQuery && takeItem) return;
   errEl.classList.add('hidden');
   $('#take-suggestions').classList.add('hidden');
   $('#take-item').classList.add('hidden');
   $('#take-fields').classList.add('hidden');
   takeItem = null;
   if (!code) { lastTakeQuery = ''; return; }
-  if (code === lastTakeQuery) return; // Enter/blur ulang dengan teks sama: jangan render ulang
   lastTakeQuery = code;
   try {
     // jalur cepat: Kode FD / barcode persis
     const r = await api('/api/items/lookup?code=' + encodeURIComponent(code));
+    // sementara fetch jalan, barang mungkin sudah terpilih (mis. lewat saran
+    // dari pencarian live): jangan timpa pilihan itu
+    if (takeItem && $('#take-code').value.trim() === lastTakeQuery) return;
     selectTakeItem(r.item);
   } catch (e) {
     // bukan kode: cari berdasarkan nama (sebagian, tanpa peduli huruf besar/kecil)
     try {
       const r = await api('/api/items?search=' + encodeURIComponent(code) + '&filter=all&page=1&perPage=8');
+      // jangan tampilkan saran bila barang sudah terpilih sementara itu
+      if (takeItem && $('#take-code').value.trim() === lastTakeQuery) return;
       if (r.items && r.items.length) { renderTakeSuggestions(r.items); return; }
     } catch (_) { /* jatuh ke pesan tidak ditemukan */ }
     errEl.textContent = 'Barang dengan kode atau nama "' + code + '" tidak ditemukan.';
@@ -797,14 +831,84 @@ async function loadTakeRecent() {
     const list = $('#take-recent');
     if (!r.takes.length) { list.innerHTML = '<p class="muted">Belum ada pengambilan.</p>'; return; }
     list.innerHTML = r.takes.map((m) => `
-      <button class="row" data-item="${m.item_id}">
+      <button class="row" data-take="${m.id}">
         <span class="r-stock">−${fmt(m.qty)}</span>
         <span class="r-name">${esc(m.item_name)}</span>
         <div class="r-sub">${esc(m.fd_code || '')} • ${esc(m.machine || '-')} • ${esc(m.taken_by || '-')} • ${fmtDateID(m.date)} ${timeOf(m.created_at)}</div>
       </button>`).join('');
-    list.querySelectorAll('[data-item]').forEach((b) => b.addEventListener('click', () => openDetail(+b.dataset.item, 'take')));
+    list.querySelectorAll('[data-take]').forEach((b) => b.addEventListener('click', () => openTakeDetail(+b.dataset.take, 'take')));
   } catch (e) { /* diam */ }
 }
+
+// ---------- detail catatan pengambilan (Ambil) ----------
+// Baris "Pengambilan terakhir" bisa diklik → tampilkan semua informasi catatan
+// itu, dengan tombol Hapus (per catatan, bukan per barang) dan Ubah (Admin).
+// Latar: dulu satu-satunya Hapus yang bisa dicapai dari baris pengambilan
+// adalah hapus barang di detail barang — menghapus barang beserta SEMUA
+// riwayatnya, jadi 2 catatan pengambilan yang sama ikut hilang semua.
+async function openTakeDetail(id, back) {
+  takeDetailBack = back || 'take';
+  showView('take-detail');
+  const box = $('#take-detail-content');
+  box.innerHTML = '<p class="muted">Memuat…</p>';
+  try {
+    const r = await api('/api/takes/' + id);
+    const t = r.take;
+    let html = '<div class="card">'
+      + '<h2 style="margin-top:0">' + esc(t.item_name) + '</h2>'
+      + '<dl class="kv">'
+      + '<dt>Kode FD</dt><dd>' + esc(t.fd_code || '-') + '</dd>'
+      + '<dt>Jumlah</dt><dd><b>−' + fmt(t.qty) + ' pcs</b></dd>'
+      + '<dt>Dipakai di mesin</dt><dd>' + esc(t.machine || '-') + '</dd>'
+      + '<dt>Nama pemakai</dt><dd>' + esc(t.taken_by || '-') + '</dd>'
+      + '<dt>Tanggal</dt><dd>' + fmtDateID(t.date) + ' ' + timeOf(t.created_at) + ' WIB</dd>'
+      + '<dt>Dicatat oleh</dt><dd>' + esc(t.created_by || '-') + '</dd>'
+      + '<dt>Keterangan</dt><dd>' + esc(t.note || '-') + '</dd>'
+      + '</dl>'
+      + '<p><button class="btn" id="btn-take-detail-item">📦 Lihat detail barang</button></p>';
+    if (IS_ADMIN && t.editable) {
+      html += '<p><button class="btn" id="btn-edit-take">✏️ Ubah</button> '
+        + '<button class="btn btn-danger" id="btn-del-take">🗑 Hapus catatan</button></p>'
+        + '<div id="take-edit-box" class="hidden"><div class="grid2">'
+        + '<label>Jumlah *<input type="number" id="take-edit-qty" min="1" value="' + t.qty + '"></label>'
+        + '<label>Dipakai di mesin<input id="take-edit-machine" value="' + esc(t.machine || '') + '" autocomplete="off"></label>'
+        + '</div><label>Nama pemakai *<input id="take-edit-by" value="' + esc(t.taken_by || '') + '" autocomplete="off"></label>'
+        + '<p><button class="btn btn-primary" id="btn-save-take-edit">💾 Simpan perubahan</button> '
+        + '<button class="btn" id="btn-cancel-take-edit">Batal</button></p></div>';
+    } else if (!t.editable) {
+      html += '<p class="muted small">Catatan ini (' + esc(t.note || 'penyesuaian') + ') bukan catatan pengambilan — hanya bisa dilihat di sini. Ubah/hapus lewat menu yang bersangkutan.</p>';
+    }
+    html += '<p><button class="btn" id="btn-close-take-detail">‹ Kembali</button></p></div>';
+    box.innerHTML = html;
+    $('#btn-take-detail-item').addEventListener('click', () => openDetail(t.item_id, 'take-detail'));
+    $('#btn-close-take-detail').addEventListener('click', () => showView(takeDetailBack));
+    if (IS_ADMIN && t.editable) {
+      $('#btn-edit-take').addEventListener('click', () => $('#take-edit-box').classList.toggle('hidden'));
+      $('#btn-cancel-take-edit').addEventListener('click', () => $('#take-edit-box').classList.add('hidden'));
+      $('#btn-save-take-edit').addEventListener('click', async () => {
+        try {
+          const res = await apiJSON('/api/takes/' + t.id, {
+            qty: $('#take-edit-qty').value,
+            taken_by: $('#take-edit-by').value,
+            machine: $('#take-edit-machine').value,
+          }, 'PUT');
+          toast('Catatan diubah. Stok sekarang: ' + fmt(res.balance));
+          loadTakeRecent();
+          openTakeDetail(t.id, takeDetailBack);
+        } catch (err) { toast(err.message); }
+      });
+      $('#btn-del-take').addEventListener('click', async () => {
+        if (!confirm('Hapus catatan pengambilan "' + t.item_name + '" — ' + t.qty + ' pcs oleh ' + (t.taken_by || '-') + '?\nHanya catatan ini yang dihapus; stok akan dikembalikan sebanyak ' + t.qty + ' pcs. Catatan pengambilan lain dari barang yang sama TIDAK ikut terhapus.')) return;
+        try {
+          const res = await apiJSON('/api/takes/' + t.id, undefined, 'DELETE');
+          toast(res.message || 'Catatan dihapus.');
+          showView('take');
+        } catch (err) { toast(err.message); }
+      });
+    }
+  } catch (e) { box.innerHTML = '<p class="error">' + esc(e.message) + '</p>'; }
+}
+$('#btn-back-take-detail').addEventListener('click', () => showView(takeDetailBack));
 
 // tanggal+jam ISO (UTC) -> tanggal lokal id-ID, cth: 27/11/2026 14:05
 function fmtDateTimeLocal(iso) {
@@ -1268,30 +1372,139 @@ async function loadSupplierHistory() {
 $('#supplier-filter').addEventListener('change', (e) => { supplierFilter = e.target.value; loadSupplierHistory(); });
 
 // ---------- stock opname (SO) ----------
+// Pelajaran dari bug intermiten di form Ambil: di lookupSo, guard "teks sama
+// dengan yang terakhir dipilih" dicek SEBELUM ada penyembunyian/pengubahan
+// state apa pun. Kalau tidak, change/blur yang terpicu sesaat setelah
+// pemilihan saran akan menyembunyikan field yang baru tampil (takeItem
+// di-nol-kan dulu, guard baru dicek sesudahnya).
+let lastSoQuery = '';
+let soLiveTimer = null;
+let soLiveSeq = 0;
+let lastSoLiveQuery = '';
+function selectSoItem(item) {
+  soItem = item;
+  // Pemilihan menang atas pencarian live yang tertunda/sedang berjalan:
+  // batalkan timer debounce dan buat respons fetch lama kedaluwarsa, supaya
+  // saran tidak me-render ulang saat user sedang mengetuk.
+  clearTimeout(soLiveTimer);
+  soLiveSeq++;
+  // barang terpilih untuk teks ini: Enter/blur/change ulang dengan teks sama
+  // tidak me-render ulang (dan tidak menyembunyikan field yang sudah tampil)
+  lastSoQuery = $('#so-code').value.trim();
+  $('#so-suggestions').classList.add('hidden');
+  $('#so-error').classList.add('hidden');
+  $('#so-item').innerHTML = '<div class="row"><span class="r-stock">' + fmt(item.stock) + ' <small>' + esc(item.unit) + '</small></span>'
+    + '<span class="r-name">' + esc(item.name) + '</span>'
+    + '<div class="r-sub">' + esc(item.fd_code || '') + ' • Rak ' + esc(item.rack || '-') + ' • Shaf ' + esc(item.shelf || '-') + ' • Box ' + esc(item.jolly_box || '-') + ' • Stok sistem: ' + fmt(item.stock) + '</div></div>';
+  $('#so-item').classList.remove('hidden');
+  $('#so-fields').classList.remove('hidden');
+  $('#so-counted').focus();
+}
+function renderSoSuggestions(items) {
+  const box = $('#so-suggestions');
+  // batasi 8 saran (server men-clamp perPage minimal 10, jadi cap ada di client)
+  const shown = items.slice(0, 8);
+  box.innerHTML = '<p class="muted small">Pilih barang berdasarkan nama:</p>' + shown.map((it) => '<button type="button" class="row" data-so-suggest="' + it.id + '">'
+    + '<span class="r-stock">' + fmt(it.stock) + ' <small>' + esc(it.unit) + '</small></span>'
+    + '<span class="r-name">' + esc(it.name) + '</span>'
+    + '<div class="r-sub">' + esc(it.fd_code || it.barcode || '') + ' • Rak ' + esc(it.rack || '-') + ' • Shaf ' + esc(it.shelf || '-') + ' • Box ' + esc(it.jolly_box || '-') + '</div></button>').join('');
+  box.classList.remove('hidden');
+  // mousedown + touchstart (bukan click) + preventDefault: pemilihan jalan
+  // sebelum input kehilangan fokus, jadi daftar saran tidak sempat
+  // di-render ulang oleh event change lalu menghilangkan tombol yang
+  // sedang diketuk. touchstart penting di HP: tap sentuh tidak selalu
+  // menghasilkan mousedown yang tepat waktu.
+  const pick = (b) => (e) => {
+    e.preventDefault();
+    const it = shown.find((x) => x.id === +b.dataset.soSuggest);
+    if (it) selectSoItem(it);
+  };
+  box.querySelectorAll('[data-so-suggest]').forEach((b) => {
+    b.addEventListener('mousedown', pick(b));
+    b.addEventListener('touchstart', pick(b), { passive: false });
+  });
+}
+async function liveSoSearch() {
+  const q = $('#so-code').value.trim();
+  if (!q) {
+    // input dikosongkan: sembunyikan saran + bersihkan pilihan (mirip lookupSo)
+    $('#so-suggestions').classList.add('hidden');
+    $('#so-error').classList.add('hidden');
+    $('#so-item').classList.add('hidden');
+    $('#so-fields').classList.add('hidden');
+    soItem = null;
+    lastSoQuery = '';
+    lastSoLiveQuery = '';
+    return;
+  }
+  // barang sudah terpilih untuk teks ini: jangan ganggu (field tetap tampil)
+  if (q === lastSoQuery) return;
+  // teks ini sudah dicari live: jangan fetch ulang
+  if (q === lastSoLiveQuery) return;
+  // query berubah dari barang yang tadi terpilih: bersihkan pilihan lama
+  // (pilih saran baru akan menampilkan field lagi via selectSoItem)
+  if (soItem) {
+    soItem = null;
+    $('#so-item').classList.add('hidden');
+    $('#so-fields').classList.add('hidden');
+  }
+  const seq = ++soLiveSeq;
+  try {
+    const r = await api('/api/items?search=' + encodeURIComponent(q) + '&filter=all&page=1&perPage=8');
+    if (seq !== soLiveSeq) return; // sudah kedaluwarsa: ada pencarian lebih baru
+    if ($('#so-code').value.trim() !== q) return; // teks sudah berubah
+    if (q === lastSoQuery) return; // sementara itu sudah terpilih (mis. lewat Enter)
+    lastSoLiveQuery = q;
+    if (r.items && r.items.length) renderSoSuggestions(r.items);
+    else $('#so-suggestions').classList.add('hidden');
+  } catch (_) { /* diam saat mengetik: jangan tampilkan error di tengah ketikan */ }
+}
 async function lookupSo() {
   const code = $('#so-code').value.trim();
   const errEl = $('#so-error');
+  // GUARD DULU, sebelum menyembunyikan/mengubah apa pun: teks sama dengan
+  // yang terakhir dipilih dan barang masih terpilih -> jangan sentuh state.
+  // Ini yang membedakan dari bug Ambil (hide dulu, guard belakangan).
+  if (code === lastSoQuery && soItem) return;
+  if (!code) {
+    lastSoQuery = '';
+    lastSoLiveQuery = '';
+    soItem = null;
+    $('#so-suggestions').classList.add('hidden');
+    $('#so-item').classList.add('hidden');
+    $('#so-fields').classList.add('hidden');
+    return;
+  }
   errEl.classList.add('hidden');
+  $('#so-suggestions').classList.add('hidden');
   $('#so-item').classList.add('hidden');
   $('#so-fields').classList.add('hidden');
   soItem = null;
-  if (!code) return;
+  lastSoQuery = code;
   try {
+    // jalur cepat: Kode FD / barcode persis
     const r = await api('/api/items/lookup?code=' + encodeURIComponent(code));
-    soItem = r.item;
-    $('#so-item').innerHTML = '<div class="row"><span class="r-stock">' + fmt(r.item.stock) + ' <small>' + esc(r.item.unit) + '</small></span>'
-      + '<span class="r-name">' + esc(r.item.name) + '</span>'
-      + '<div class="r-sub">' + esc(r.item.fd_code || '') + ' • Rak ' + esc(r.item.rack || '-') + ' • Shaf ' + esc(r.item.shelf || '-') + ' • Box ' + esc(r.item.jolly_box || '-') + ' • Stok sistem: ' + fmt(r.item.stock) + '</div></div>';
-    $('#so-item').classList.remove('hidden');
-    $('#so-fields').classList.remove('hidden');
-    $('#so-counted').focus();
+    selectSoItem(r.item);
   } catch (e) {
-    errEl.textContent = e.message;
+    // bukan kode: cari berdasarkan nama (sebagian, tanpa peduli huruf besar/kecil)
+    try {
+      const r = await api('/api/items?search=' + encodeURIComponent(code) + '&filter=all&page=1&perPage=8');
+      if (r.items && r.items.length) { renderSoSuggestions(r.items); return; }
+    } catch (_) { /* jatuh ke pesan tidak ditemukan */ }
+    errEl.textContent = 'Barang dengan kode atau nama "' + code + '" tidak ditemukan.';
     errEl.classList.remove('hidden');
   }
 }
 $('#so-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); lookupSo(); } });
 $('#so-code').addEventListener('change', lookupSo);
+// Pencarian LIVE saat mengetik: saran nama muncul tanpa tekan Enter (di HP,
+// Enter sering hanya menutup keyboard, jadi saran tidak pernah terlihat).
+// Debounce 250 ms supaya ketik cepat tidak membanjiri server; respons yang
+// kedaluwarsa diabaikan supaya saran lama tidak menimpa saran baru.
+$('#so-code').addEventListener('input', () => {
+  clearTimeout(soLiveTimer);
+  soLiveTimer = setTimeout(liveSoSearch, 250);
+});
 $('#btn-lookup-so').addEventListener('click', lookupSo);
 $('#btn-scan-so').addEventListener('click', () => openScanner('so'));
 $('#btn-save-so').addEventListener('click', async () => {
@@ -1304,6 +1517,8 @@ $('#btn-save-so').addEventListener('click', async () => {
     else toast('SO tersimpan — selisih ' + (r.record.diff > 0 ? '+' : '') + fmt(r.record.diff) + ' dari stok sistem.');
     $('#so-code').value = ''; $('#so-counted').value = '0';
     $('#so-item').classList.add('hidden'); $('#so-fields').classList.add('hidden');
+    $('#so-suggestions').classList.add('hidden');
+    lastSoQuery = '';
     soItem = null;
     loadSo();
   } catch (e) { toast(e.message); }

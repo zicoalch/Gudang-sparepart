@@ -1,8 +1,14 @@
 // Verifikasi fitur Stock Opname (SO) — server uji terpisah (DB /tmp/so-test.db, port 3109).
 // TIDAK menyentuh database utama. Jalankan: node test-so.js
+// Bagian 12 memakai jsdom untuk simulasi DOM sungguhan (event input, mousedown,
+// touchstart, Enter, klik Simpan). Pasang sekali: npm install --no-save jsdom
+// (node_modules di-gitignore, tidak ikut ter-push). Bila jsdom tidak ada,
+// bagian 12 dilewati dengan pesan jelas.
 const fs = require('fs');
 const { spawn } = require('child_process');
 const XLSX = require('xlsx');
+let JSDOM = null;
+try { ({ JSDOM } = require('jsdom')); } catch (_) { /* bagian 12 dilewati */ }
 
 const BASE = 'http://localhost:3109';
 const DB_PATH = '/tmp/so-test.db';
@@ -209,9 +215,9 @@ async function waitUp() {
 
     console.log('== 9. Frontend ter-serve ==');
     r = await admin.req('/index.html');
-    check('index.html: tombol nav SO', r.text.includes('data-view="so"'));
+    check('index.html: tombol nav tertulis "Stock Opname"', r.text.includes('<button data-view="so">📋 Stock Opname</button>'));
     check('index.html: view SO + date + ekspor', r.text.includes('id="view-so"') && r.text.includes('id="so-date"') && r.text.includes('btn-export-so'));
-    check('index.html: input kode + scan + jumlah + simpan', r.text.includes('id="so-code"') && r.text.includes('btn-scan-so') && r.text.includes('id="so-counted"') && r.text.includes('btn-save-so'));
+    check('index.html: input kode + saran nama + scan + jumlah + simpan', r.text.includes('id="so-code"') && r.text.includes('id="so-suggestions"') && r.text.includes('btn-scan-so') && r.text.includes('id="so-counted"') && r.text.includes('btn-save-so'));
     check('index.html: daftar SO + label tanggal', r.text.includes('id="so-list"') && r.text.includes('id="so-date-label"'));
     check('index.html: seksi dash-out-section + dash-date-row', r.text.includes('id="dash-out-section"') && r.text.includes('id="dash-date-row"'));
     r = await admin.req('/app.js');
@@ -222,7 +228,7 @@ async function waitUp() {
     check('app.js: ekspor SO ke /api/so/export', r.text.includes('/api/so/export'));
     check('app.js: simpan SO ke POST /api/so', r.text.includes("'/api/so'"));
     check('app.js: tombol nav SO disembunyikan untuk non-Admin', r.text.includes('button[data-view="so"]') && r.text.includes("IS_ADMIN ? '' : 'none'"));
-    check('app.js: penjaga view SO (toast + alih ke dashboard)', r.text.includes('Menu SO hanya untuk Admin') && r.text.includes("(name === 'so' || name === 'history' || name === 'supplier') && !IS_ADMIN"));
+    check('app.js: penjaga view SO (toast + alih ke dashboard)', r.text.includes('Menu Stock Opname hanya untuk Admin') && r.text.includes("(name === 'so' || name === 'history' || name === 'supplier') && !IS_ADMIN"));
     check('app.js: tombol nav Riwayat disembunyikan untuk non-Admin', r.text.includes('button[data-view="history"]') && r.text.includes("IS_ADMIN ? '' : 'none'"));
     check('app.js: penjaga view Riwayat (toast + alih ke dashboard)', r.text.includes('Menu Riwayat hanya untuk Admin'));
     check('app.js: bagian Sparepart keluar Dashboard disembunyikan untuk non-Admin', r.text.includes("$('#dash-out-section').style.display = IS_ADMIN") && r.text.includes("$('#dash-date-row').style.display = IS_ADMIN"));
@@ -287,7 +293,169 @@ async function waitUp() {
     check('app.js: simpan SO mengirim date dari date picker', r.text.includes("date: $('#so-date').value"));
     check('app.js: timeOf menampilkan jam WIB (geser +7 jam dari UTC)', r.text.includes('7 * 3600 * 1000') && r.text.includes('function timeOf'));
     r = await admin.req('/sw.js');
-    check('sw.js: CACHE v10', r.text.includes("gudang-sparepart-v10"));
+    r = await admin.req('/app.js');
+    check('app.js: pencarian live SO (liveSoSearch + soLiveSeq + debounce)', r.text.includes('liveSoSearch') && r.text.includes('soLiveSeq') && r.text.includes('setTimeout(liveSoSearch, 250)'));
+    check('app.js: guard dipilih dicek SEBELUM sembunyikan (pelajaran bug Ambil)', r.text.includes("if (code === lastSoQuery && soItem) return;"));
+    check('app.js: pilih saran batalkan live search tertunda (clearTimeout + soLiveSeq++)', r.text.includes('clearTimeout(soLiveTimer)') && r.text.includes('soLiveSeq++'));
+    check('app.js: pilih saran tahan tap sentuh (touchstart)', r.text.includes("addEventListener('touchstart'") && r.text.includes('selectSoItem'));
+    r = await admin.req('/sw.js');
+    check('sw.js: CACHE v13', r.text.includes("gudang-sparepart-v13"));
+    console.log('== 12. Label nav + pencarian LIVE di form SO (jsdom) ==');
+    r = await admin.req('/');
+    check('nav: tombol SO tertulis "📋 Stock Opname", data-view tetap so', r.text.includes('<button data-view="so">📋 Stock Opname</button>'));
+    check('nav: tidak ada lagi tombol "📋 SO" saja', !r.text.includes('<button data-view="so">📋 SO</button>'));
+    r = await admin.req('/api/items?search=shaft&filter=all&page=1&perPage=8');
+    check('API cari "shaft" -> SHAFT SO', r.status === 200 && (r.json.items || []).some((x) => x.name === 'SHAFT SO'), JSON.stringify(r.json).slice(0, 200));
+    r = await admin.j('/api/items', { name: 'MASKER KAIN SO', fd_code: 'FD100101', stock: 10, unit: 'PCS', rack: 'RAK 1', shelf: 'A.1', jolly_box: '1', category: 'MASKER' });
+    check('buat barang MASKER KAIN SO FD100101 stok 10', r.status === 200 && r.json.id, JSON.stringify(r.json).slice(0, 120));
+    const idMaskerSo1 = r.json.id;
+    r = await admin.j('/api/items', { name: 'MASKER N95 SO', fd_code: 'FD100102', stock: 4, unit: 'PCS', rack: 'RAK 1', shelf: 'A.2', jolly_box: '2', category: 'MASKER' });
+    check('buat barang MASKER N95 SO FD100102 stok 4', r.status === 200 && r.json.id, JSON.stringify(r.json).slice(0, 120));
+    const idMaskerSo2 = r.json.id;
+    r = await admin.j('/api/items', { name: 'SARUNG SO', fd_code: 'FD100103', stock: 6, unit: 'PCS', rack: 'RAK 2', shelf: 'B.1', jolly_box: '3', category: 'SARUNG' });
+    check('buat barang SARUNG SO FD100103 stok 6', r.status === 200 && r.json.id, JSON.stringify(r.json).slice(0, 120));
+    r = await admin.req('/api/items?search=masker&filter=all&page=1&perPage=8');
+    check('API cari "masker" -> 2 barang MASKER SO', r.status === 200 && (r.json.items || []).filter((x) => x.name.includes('MASKER')).length === 2, JSON.stringify(r.json).slice(0, 200));
+
+    if (!JSDOM) {
+      console.log('  SKIP  jsdom belum terpasang — jalankan: npm install --no-save jsdom');
+    } else {
+      const htmlR = await admin.req('/index.html');
+      const jsR = await admin.req('/app.js');
+      check('index.html terambil untuk jsdom', htmlR.status === 200 && htmlR.text.includes('so-code'));
+      check('app.js terambil untuk jsdom', jsR.status === 200 && jsR.text.includes('liveSoSearch'));
+      let searchReqs = 0;
+      const nodeFetch = fetch;
+      const dom = new JSDOM(htmlR.text, { url: BASE + '/', runScripts: 'outside-only', pretendToBeVisual: true });
+      dom.window.scrollTo = () => {};
+      dom.window.fetch = (url, opts = {}) => {
+        const abs = String(url).startsWith('http') ? String(url) : BASE + url;
+        if (abs.includes('/api/items?search=')) searchReqs++;
+        const headers = Object.assign({}, opts.headers || {});
+        if (admin.cookie) headers.Cookie = admin.cookie;
+        return nodeFetch(abs, Object.assign({}, opts, { headers }));
+      };
+      dom.window.eval(jsR.text);
+      const doc = dom.window.document;
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const sugBox = () => doc.querySelector('#so-suggestions');
+      const sugCount = () => sugBox().querySelectorAll('[data-so-suggest]').length;
+      const isHidden = (el) => el.classList.contains('hidden');
+      const type = async (text) => {
+        const inp = doc.querySelector('#so-code');
+        inp.value = text;
+        inp.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+      };
+      // tunggu boot(): status -> me -> enterApp -> dashboard
+      let booted = false;
+      for (let i = 0; i < 20 && !booted; i++) {
+        await sleep(250);
+        booted = !isHidden(doc.querySelector('#app')) && isHidden(doc.querySelector('#view-login'));
+      }
+      check('boot jsdom: masuk aplikasi sebagai Admin', booted);
+      // buka menu Stock Opname
+      doc.querySelector('#topnav button[data-view="so"]').click();
+      await sleep(300);
+      check('menu Stock Opname terbuka', !isHidden(doc.querySelector('#view-so')));
+      check('label nav di DOM tertulis "Stock Opname"', doc.querySelector('#topnav button[data-view="so"]').textContent.includes('Stock Opname'));
+      const input = doc.querySelector('#so-code');
+
+      // 12a. Debounce: ketik cepat 6 huruf -> hanya 1 request pencarian
+      searchReqs = 0;
+      for (const t of ['m', 'ma', 'mas', 'mask', 'maske', 'masker']) { await type(t); await sleep(30); }
+      await sleep(600);
+      check('debounce: ketik cepat 6 huruf -> hanya 1 request pencarian', searchReqs === 1, 'requests=' + searchReqs);
+      check('ketik "masker" TANPA Enter -> saran live muncul (2)', sugCount() === 2 && !isHidden(sugBox()), 'saran=' + sugCount());
+
+      // 12b. Menyempit saat mengetik lebih panjang
+      await type('m'); await sleep(500);
+      check('ketik "m" -> 3 saran', sugCount() === 3, 'saran=' + sugCount());
+      await type('ma'); await sleep(500);
+      check('ketik "ma" -> saran menyempit jadi 2', sugCount() === 2, 'saran=' + sugCount());
+
+      // 12c. Hapus isi -> saran hilang
+      await type(''); await sleep(500);
+      check('hapus isi input -> saran hilang', isHidden(sugBox()), 'saran=' + sugCount());
+
+      // 12d. Pilih saran (mousedown) -> preview + field Jumlah SO tampil
+      await type('masker'); await sleep(500);
+      check('ketik "masker" lagi -> 2 saran', sugCount() === 2, 'saran=' + sugCount());
+      const btn2 = [...sugBox().querySelectorAll('[data-so-suggest]')].find((b) => b.textContent.includes('FD100102'));
+      check('saran FD100102 ditemukan', !!btn2);
+      btn2.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      await sleep(200);
+      check('pilih saran -> #so-item tampil berisi MASKER N95 SO FD100102',
+        !isHidden(doc.querySelector('#so-item')) && doc.querySelector('#so-item').textContent.includes('MASKER N95 SO') && doc.querySelector('#so-item').textContent.includes('FD100102'));
+      check('pilih saran -> #so-fields tampil (Jumlah SO, Simpan SO)',
+        !isHidden(doc.querySelector('#so-fields')) && !!doc.querySelector('#so-counted') && !!doc.querySelector('#btn-save-so'));
+
+      // 12e. REGRESI BUG AMBIL (paling penting): blur/change setelah pemilihan
+      // tidak boleh menyembunyikan field. Ulangi 2x untuk menangkap intermiten.
+      for (let round = 1; round <= 2; round++) {
+        input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+        input.dispatchEvent(new dom.window.Event('blur', { bubbles: true }));
+        doc.querySelector('#so-counted').focus();
+        await sleep(200);
+        check('putaran ' + round + ': change/blur + fokus ke Jumlah SO -> #so-fields TETAP tampil',
+          !isHidden(doc.querySelector('#so-fields')) && !isHidden(doc.querySelector('#so-item')));
+        // ketik ulang teks yang sama lalu Enter: guard tidak boleh merusak pilihan
+        input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+        await sleep(300);
+        check('putaran ' + round + ': Enter ulang teks sama -> #so-fields TETAP tampil',
+          !isHidden(doc.querySelector('#so-fields')) && !isHidden(doc.querySelector('#so-item')));
+      }
+
+      // 12f. Pilih saran lewat touchstart (tap sentuh HP) -> field tampil
+      await type('sarung'); await sleep(500);
+      check('ketik "sarung" -> 1 saran', sugCount() === 1 && sugBox().textContent.includes('SARUNG SO'), 'saran=' + sugCount());
+      const btnS = sugBox().querySelector('[data-so-suggest]');
+      btnS.dispatchEvent(new dom.window.Event('touchstart', { bubbles: true, cancelable: true }));
+      await sleep(200);
+      check('pilih saran via touchstart -> #so-fields tampil + preview SARUNG SO',
+        !isHidden(doc.querySelector('#so-fields')) && doc.querySelector('#so-item').textContent.includes('SARUNG SO'));
+      input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+      await sleep(200);
+      check('setelah pilih via touchstart + change -> #so-fields TETAP tampil', !isHidden(doc.querySelector('#so-fields')));
+
+      // 12g. Query berubah setelah terpilih -> field hilang, pilih saran baru -> tampil lagi
+      await type('masker'); await sleep(500);
+      check('ganti query ke "masker" -> pilihan lama dibersihkan, #so-fields hilang', isHidden(doc.querySelector('#so-fields')) && isHidden(doc.querySelector('#so-item')));
+      check('ganti query ke "masker" -> saran baru muncul (2)', sugCount() === 2, 'saran=' + sugCount());
+      const btnM = [...sugBox().querySelectorAll('[data-so-suggest]')].find((b) => b.textContent.includes('FD100101'));
+      btnM.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      await sleep(200);
+      check('pilih saran baru -> #so-fields tampil lagi + preview MASKER KAIN SO',
+        !isHidden(doc.querySelector('#so-fields')) && doc.querySelector('#so-item').textContent.includes('MASKER KAIN SO'));
+
+      // 12h. Enter dengan Kode FD persis -> tetap langsung terpilih
+      input.value = 'FD100101';
+      input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await sleep(500);
+      check('Enter "FD100101" -> langsung terpilih (preview tampil)',
+        !isHidden(doc.querySelector('#so-item')) && doc.querySelector('#so-item').textContent.includes('FD100101'));
+
+      // 12i. Nama tidak ada -> pesan tidak ditemukan
+      await type('tidakada'); await sleep(500);
+      check('ketik nama tidak ada -> saran tetap tersembunyi', isHidden(sugBox()));
+      input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await sleep(500);
+      check('Enter nama tidak ada -> pesan tidak ditemukan tampil',
+        !isHidden(doc.querySelector('#so-error')) && doc.querySelector('#so-error').textContent.includes('tidak ditemukan'));
+
+      // 12j. Simpan SO via form (barang hasil pencarian nama) -> tercatat di tanggal yang dipilih
+      await type('masker'); await sleep(500);
+      const btnSave = [...sugBox().querySelectorAll('[data-so-suggest]')].find((b) => b.textContent.includes('FD100101'));
+      btnSave.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      await sleep(200);
+      const soDate = doc.querySelector('#so-date').value || today;
+      doc.querySelector('#so-counted').value = '7';
+      doc.querySelector('#btn-save-so').click();
+      await sleep(600);
+      const saved = await admin.req('/api/so?date=' + soDate);
+      check('simpan SO via form (MASKER KAIN SO, hitung 7) -> tercatat di tanggal ' + soDate,
+        saved.status === 200 && (saved.json.records || []).some((x) => x.item_id === idMaskerSo1 && x.counted === 7),
+        JSON.stringify(saved.json).slice(0, 300));
+    }
   } finally {
     server.kill();
     await new Promise((r) => setTimeout(r, 500));

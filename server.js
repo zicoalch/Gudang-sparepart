@@ -191,6 +191,13 @@ for (const col of ['photo_hash TEXT DEFAULT \'\'', 'photo_hist TEXT DEFAULT \'\'
   if (!has) db.exec("ALTER TABLE loans ADD COLUMN machine TEXT DEFAULT ''");
 }
 
+// migrasi: kolom pencatat untuk pergerakan stok (dipakai detail catatan pengambilan).
+// ADD COLUMN saja — tabel moves berisi data user, jangan drop/recreate.
+{
+  const has = db.prepare("SELECT COUNT(*) c FROM pragma_table_info('moves') WHERE name = 'created_by'").get().c;
+  if (!has) db.exec("ALTER TABLE moves ADD COLUMN created_by TEXT DEFAULT ''");
+}
+
 // Indeks loans — dibuat di sini (setelah migrasi) supaya DB lama yang skema
 // loans-nya masih item_id tidak gagal saat blok CREATE TABLE di atas jalan.
 db.exec('CREATE INDEX IF NOT EXISTS idx_loans_tool ON loans(tool_id)');
@@ -635,8 +642,8 @@ app.post('/api/take', requireAuth, (req, res) => {
     if (row.stock < qty) return { error: 'Stok tidak cukup. Sisa ' + row.stock + ', diminta ' + qty + '.' };
     const next = row.stock - qty;
     db.prepare('UPDATE items SET stock = ?, updated_at = ? WHERE id = ?').run(next, nowIso(), itemId);
-    db.prepare(`INSERT INTO moves (item_id, date, kind, qty, balance, machine, taken_by, note, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?)`).run(itemId, todayLocal(), 'out', qty, next, machine, takenBy, 'Pengambilan', nowIso());
+    db.prepare(`INSERT INTO moves (item_id, date, kind, qty, balance, machine, taken_by, note, created_at, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(itemId, todayLocal(), 'out', qty, next, machine, takenBy, 'Pengambilan', nowIso(), req.account.username);
     return { balance: next, name: row.name };
   });
   if (r.error) return fail(res, 400, r.error);
@@ -650,6 +657,97 @@ app.get('/api/takes/recent', requireAuth, (req, res) => {
   const rows = db.prepare(`SELECT m.*, i.name AS item_name, i.fd_code FROM moves m
     JOIN items i ON i.id = m.item_id WHERE m.kind = 'out' AND m.note != 'Pinjam' AND m.note NOT LIKE 'Dibawa supplier%' ORDER BY m.id DESC LIMIT 20`).all();
   ok(res, { takes: rows });
+});
+
+// ---------- detail / hapus / ubah satu catatan pengambilan ----------
+// Latar: hapus catatan pengambilan HARUS per id moves, bukan per barang.
+// Dulu satu-satunya "Hapus" yang bisa dicapai dari baris pengambilan adalah
+// hapus barang (DELETE /api/items/:id) yang menghapus barang beserta SEMUA
+// riwayatnya — user menghapus 1 dari 2 catatan pengambilan yang sama, kedua
+// catatan hilang bersama barangnya. Endpoint di bawah ini hanya menyentuh
+// SATU baris moves (berdasarkan id moves) dan mengembalikan/menyesuaikan stok.
+function takeById(id) {
+  return db.prepare(`SELECT m.*, i.name AS item_name, i.fd_code FROM moves m
+    JOIN items i ON i.id = m.item_id WHERE m.id = ?`).get(id);
+}
+function takeListRow(id) {
+  // catatan yang tampil di "Pengambilan terakhir": kind out, bukan Pinjam/supplier
+  const r = takeById(id);
+  if (!r) return null;
+  if (r.kind !== 'out' || r.note === 'Pinjam' || r.note.startsWith('Dibawa supplier')) return null;
+  return r;
+}
+function takeRow(r) {
+  return {
+    id: r.id, item_id: r.item_id, item_name: r.item_name, fd_code: r.fd_code || '',
+    date: r.date, kind: r.kind, qty: r.qty, balance: r.balance,
+    machine: r.machine || '', taken_by: r.taken_by || '', note: r.note || '',
+    created_by: r.created_by || '', created_at: r.created_at,
+    // hanya catatan 'Pengambilan' yang bisa diubah/dihapus dari sini;
+    // penyesuaian stok manual ('Stok keluar') dan koreksi SO ('Opname (SO)')
+    // hanya bisa dilihat — diurus lewat menu masing-masing.
+    editable: r.kind === 'out' && r.note === 'Pengambilan',
+  };
+}
+
+// Detail satu catatan pengambilan — semua peran yang login boleh melihat.
+app.get('/api/takes/:id', requireAuth, (req, res) => {
+  const r = takeListRow(parseInt(req.params.id, 10));
+  if (!r) return fail(res, 404, 'Catatan pengambilan tidak ditemukan.');
+  ok(res, { take: takeRow(r) });
+});
+
+// Hapus SATU catatan pengambilan — Admin saja. Stok dikembalikan sebesar qty
+// catatan itu; catatan lain dari barang yang sama tidak tersentuh.
+app.delete('/api/takes/:id', requireAuth, requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const r = withTx(() => {
+    const row = db.prepare('SELECT * FROM moves WHERE id = ?').get(id);
+    if (!row) return { error: 'Catatan pengambilan tidak ditemukan.', status: 404 };
+    if (row.kind !== 'out' || row.note !== 'Pengambilan') return { error: 'Catatan ini bukan catatan pengambilan, tidak bisa dihapus dari sini.', status: 400 };
+    const item = db.prepare('SELECT * FROM items WHERE id = ?').get(row.item_id);
+    if (!item) return { error: 'Barang tidak ditemukan.', status: 404 };
+    const next = item.stock + row.qty;
+    db.prepare('UPDATE items SET stock = ?, updated_at = ? WHERE id = ?').run(next, nowIso(), row.item_id);
+    db.prepare('DELETE FROM moves WHERE id = ?').run(id);
+    // saldo (Sisa) pergerakan sesudahnya ikut bergeser sebesar qty yang dikembalikan,
+    // supaya kartu stok tetap konsisten.
+    db.prepare('UPDATE moves SET balance = balance + ? WHERE item_id = ? AND id > ?').run(row.qty, row.item_id, id);
+    return { balance: next, item_name: item.name, qty: row.qty };
+  });
+  if (r.error) return fail(res, r.status || 400, r.error);
+  ok(res, { balance: r.balance, message: 'Catatan pengambilan "' + r.item_name + '" (' + r.qty + ' pcs) dihapus, stok dikembalikan.' });
+});
+
+// Ubah SATU catatan pengambilan — Admin saja. Boleh ubah qty, nama pemakai,
+// mesin. Stok disesuaikan sebesar selisih qty (lama − baru); qty baru yang
+// lebih besar ditolak bila selisihnya melebihi stok tersedia. Id dan tanggal
+// asli tetap (UPDATE pada baris moves itu, bukan hapus + buat baru).
+app.put('/api/takes/:id', requireAuth, requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const qty = parseInt(req.body.qty, 10);
+  const takenBy = cleanStr(req.body.taken_by);
+  const machine = cleanStr(req.body.machine);
+  if (isNaN(qty) || qty <= 0) return fail(res, 400, 'Jumlah harus angka lebih dari 0.');
+  if (!takenBy) return fail(res, 400, 'Nama pemakai wajib diisi.');
+  const r = withTx(() => {
+    const row = db.prepare('SELECT * FROM moves WHERE id = ?').get(id);
+    if (!row) return { error: 'Catatan pengambilan tidak ditemukan.', status: 404 };
+    if (row.kind !== 'out' || row.note !== 'Pengambilan') return { error: 'Catatan ini bukan catatan pengambilan, tidak bisa diubah dari sini.', status: 400 };
+    const item = db.prepare('SELECT * FROM items WHERE id = ?').get(row.item_id);
+    if (!item) return { error: 'Barang tidak ditemukan.', status: 404 };
+    const delta = row.qty - qty; // >0: qty mengecil -> stok bertambah; <0: qty membesar -> stok berkurang
+    if (delta < 0 && item.stock < -delta) return { error: 'Stok tidak cukup. Sisa ' + item.stock + ', tambahan ' + (-delta) + ' melebihi stok.', status: 400 };
+    const next = item.stock + delta;
+    if (delta !== 0) {
+      db.prepare('UPDATE items SET stock = ?, updated_at = ? WHERE id = ?').run(next, nowIso(), row.item_id);
+      db.prepare('UPDATE moves SET balance = balance + ? WHERE item_id = ? AND id > ?').run(delta, row.item_id, id);
+    }
+    db.prepare('UPDATE moves SET qty = ?, machine = ?, taken_by = ?, balance = balance + ? WHERE id = ?').run(qty, machine, takenBy, delta, id);
+    return { balance: next };
+  });
+  if (r.error) return fail(res, r.status || 400, r.error);
+  ok(res, { balance: r.balance });
 });
 
 // ---------- daftar tools (nama saja, tanpa kode) ----------

@@ -61,7 +61,7 @@
         <button data-view="take">📤 Ambil</button>
         <button data-view="loan">🤝 Pinjam</button>
         <button data-view="supplier">🏭 Supplier</button>
-        <button data-view="so">📋 SO</button>
+        <button data-view="so">📋 Stock Opname</button>
         <button data-view="history">🕘 Riwayat</button>
         <button data-view="account">👤 Akun</button>
       </nav>
@@ -443,13 +443,14 @@
         <button class="btn" id="btn-export-so">⬇ Ekspor Excel</button>
       </div>
       <div class="card form">
-        <label>Kode FD / Barcode
+        <label>Kode FD / Barcode / Nama
           <span class="input-row">
-            <input id="so-code" placeholder="Ketik kode FD / barcode lalu Enter" autocomplete="off">
+            <input id="so-code" placeholder="Ketik kode FD, barcode, atau nama barang lalu Enter" autocomplete="off">
             <button type="button" class="btn" id="btn-lookup-so">🔍 Cari</button>
             <button type="button" class="btn btn-primary" id="btn-scan-so">📷 Scan</button>
           </span>
         </label>
+        <div id="so-suggestions" class="hidden"></div>
         <div id="so-item" class="hidden"></div>
         <div id="so-fields" class="hidden">
           <label>Jumlah SO (hasil hitung fisik) *
@@ -485,6 +486,12 @@
     <section id="view-loan-detail" class="view hidden">
       <button class="btn" id="btn-back-loan-detail">‹ Kembali</button>
       <div id="loan-detail-content"></div>
+    </section>
+
+    <!-- DETAIL CATATAN PENGAMBILAN -->
+    <section id="view-take-detail" class="view hidden">
+      <button class="btn" id="btn-back-take-detail">‹ Kembali</button>
+      <div id="take-detail-content"></div>
     </section>
 
     <!-- AKUN -->

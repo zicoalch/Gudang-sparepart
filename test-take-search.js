@@ -138,8 +138,21 @@ async function waitUp() {
     check('app.js: tidak ada lagi handler yang menyembunyikan saran saat mengetik', !r.text.includes("addEventListener('input', () => { $('#take-suggestions').classList.add('hidden'); })"));
     check('app.js: respons pencarian kedaluwarsa diabaikan (seq)', r.text.includes('takeLiveSeq'));
     check('app.js: barang terpilih dicatat (lastTakeQuery) supaya blur tidak me-render ulang', r.text.includes("lastTakeQuery = $('#take-code').value.trim()"));
+    check('app.js: guard pilihan dicek SEBELUM field disembunyikan di lookupTake (anti balapan change)',
+      r.text.includes('if (code && code === lastTakeQuery && takeItem) return;')
+      && r.text.indexOf('if (code && code === lastTakeQuery && takeItem) return;') < r.text.indexOf("$('#take-fields').classList.add('hidden')"));
+    check('app.js: tidak ada lagi guard yang dicek setelah penyembunyian', !r.text.includes('if (code === lastTakeQuery) return;'));
+    check('app.js: saran dipilih juga lewat touchstart (HP) + click (fallback), idempotent',
+      r.text.includes("addEventListener('touchstart'") && r.text.includes('pickTakeSuggestion'));
+    check('app.js: pemilihan membatalkan pencarian live tertunda (takeLiveSeq++ di selectTakeItem)',
+      r.text.includes('takeLiveSeq++;'));
+    check('app.js: render ulang saran dilewati bila daftar sama persis (suggestSig)',
+      r.text.includes('suggestSig'));
+    check('app.js: lookup in-flight tidak menimpa pilihan (cek takeItem setelah await)',
+      r.text.includes('sementara fetch jalan, barang mungkin sudah terpilih')
+      && r.text.includes('jangan tampilkan saran bila barang sudah terpilih sementara itu'));
     r = await admin.req('/sw.js');
-    check('sw.js: CACHE v10', r.text.includes('gudang-sparepart-v10'));
+    check('sw.js: CACHE v13', r.text.includes('gudang-sparepart-v13'));
 
     console.log('== 8. Simulasi DOM: pencarian LIVE saat mengetik (jsdom) ==');
     if (!JSDOM) {
@@ -251,6 +264,87 @@ async function waitUp() {
       await sleep(500);
       check('Enter nama tidak ada -> pesan tidak ditemukan tampil',
         !isHidden(doc.querySelector('#take-error')) && doc.querySelector('#take-error').textContent.includes('tidak ditemukan'));
+
+      console.log('== 9. Balapan change vs pemilihan saran (20x inti + variasi timing) ==');
+      // Barang khusus seksi ini: stok besar supaya 20x simpan tidak kehabisan
+      const idMasker3 = (await admin.j('/api/items', { name: 'MASKER KAIN', fd_code: 'FD100099', barcode: '', stock: 100, unit: 'PCS', rack: 'RAK 9', shelf: 'Z.9', jolly_box: '1', category: 'UMUM' })).json.id;
+      check('setup seksi 9: MASKER KAIN FD100099 stok 100', !!idMasker3);
+      const pickBtn = (fd) => [...sugBox().querySelectorAll('[data-take-suggest]')].find((b) => b.textContent.includes(fd));
+      const resetTake = async () => { await type(''); await sleep(400); };
+
+      // 9a. Inti (20x): ketik -> ketuk saran -> change (blur ke field Jumlah) -> field TETAP tampil -> simpan jalan
+      for (let i = 1; i <= 20; i++) {
+        await resetTake();
+        await type('masker'); await sleep(600);
+        check('9a[' + i + '] ketik "masker" -> saran muncul (ada FD100099)', !!pickBtn('FD100099'), 'saran=' + sugCount());
+        pickBtn('FD100099').dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        await sleep(200);
+        check('9a[' + i + '] ketuk saran -> #take-fields tampil', !isHidden(doc.querySelector('#take-fields')));
+        // user mengetuk field Jumlah -> input kehilangan fokus -> change terpicu
+        input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+        await sleep(300);
+        check('9a[' + i + '] setelah change, #take-fields TETAP tampil', !isHidden(doc.querySelector('#take-fields')));
+        input.dispatchEvent(new dom.window.Event('blur', { bubbles: false }));
+        await sleep(100);
+        check('9a[' + i + '] setelah blur, #take-fields TETAP tampil', !isHidden(doc.querySelector('#take-fields')));
+        const before = (await admin.req('/api/items/' + idMasker3)).json.item.stock;
+        doc.querySelector('#take-qty').value = '1';
+        doc.querySelector('#take-machine').value = 'MESIN-TEST';
+        doc.querySelector('#take-by').value = 'Tester';
+        doc.querySelector('#btn-save-take').click();
+        await sleep(600);
+        const after = (await admin.req('/api/items/' + idMasker3)).json.item.stock;
+        check('9a[' + i + '] simpan setelah change -> stok berkurang 1', after === before - 1, 'sebelum=' + before + ' sesudah=' + after);
+      }
+
+      // 9b. Balapan debounce (6x): ketuk saran SEBELUM debounce 250 ms terpicu / saat fetch in-flight
+      for (let i = 1; i <= 6; i++) {
+        await resetTake();
+        await type('m'); await sleep(600); // saran dari "m" sudah tampil
+        check('9b[' + i + '] ketik "m" -> saran tampil', sugCount() >= 1, 'saran=' + sugCount());
+        await type('masker'); // timer debounce 250 ms berjalan, saran lama masih tampil
+        const btnB = pickBtn('FD100099');
+        check('9b[' + i + '] saran lama masih ada untuk diketuk', !!btnB);
+        await sleep(260); // debounce baru saja terpicu, fetch kemungkinan in-flight
+        btnB.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        await sleep(800); // beri waktu fetch in-flight selesai
+        check('9b[' + i + '] setelah debounce/fetch lewat, #take-fields TETAP tampil', !isHidden(doc.querySelector('#take-fields')));
+        check('9b[' + i + '] preview tetap FD100099', doc.querySelector('#take-item').textContent.includes('FD100099'));
+      }
+
+      // 9c. Ketukan sentuh HP (3x): touchstart lalu change
+      for (let i = 1; i <= 3; i++) {
+        await resetTake();
+        await type('masker'); await sleep(600);
+        const btnC = pickBtn('FD100099');
+        check('9c[' + i + '] saran FD100099 ada', !!btnC);
+        btnC.dispatchEvent(new dom.window.Event('touchstart', { bubbles: true, cancelable: true }));
+        await sleep(200);
+        check('9c[' + i + '] touchstart -> #take-fields tampil', !isHidden(doc.querySelector('#take-fields')));
+        input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+        await sleep(300);
+        check('9c[' + i + '] touchstart + change -> #take-fields TETAP tampil', !isHidden(doc.querySelector('#take-fields')));
+      }
+
+      // 9d. Pilih ulang setelah ganti query (3x)
+      for (let i = 1; i <= 3; i++) {
+        await resetTake();
+        await type('masker'); await sleep(600);
+        pickBtn('FD100099').dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        await sleep(200);
+        check('9d[' + i + '] pilih FD100099 -> #take-fields tampil', !isHidden(doc.querySelector('#take-fields')));
+        await type('sarung'); await sleep(600);
+        check('9d[' + i + '] ganti query -> pilihan lama dibersihkan', isHidden(doc.querySelector('#take-fields')) && isHidden(doc.querySelector('#take-item')));
+        const btnD = pickBtn('FD100003');
+        check('9d[' + i + '] saran SARUNG muncul', !!btnD, 'saran=' + sugCount());
+        btnD.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        await sleep(200);
+        check('9d[' + i + '] pilih saran baru -> #take-fields tampil + preview SARUNG',
+          !isHidden(doc.querySelector('#take-fields')) && doc.querySelector('#take-item').textContent.includes('SARUNG TANGAN KARET'));
+        input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+        await sleep(300);
+        check('9d[' + i + '] change setelah pilih ulang -> #take-fields TETAP tampil', !isHidden(doc.querySelector('#take-fields')));
+      }
     }
   } finally {
     server.kill();
