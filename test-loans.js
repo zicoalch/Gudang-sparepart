@@ -331,7 +331,7 @@ CREATE TABLE loans (id INTEGER PRIMARY KEY AUTOINCREMENT, tool_id INTEGER REFERE
     check('app.js: simpan pinjam kirim machine + tampil di baris history', r.text.includes("machine: $('#loan-machine').value") && r.text.includes('Mesin '));
     check('app.js: detail tampilkan foto bukti besar + semua field (mesin, tanggal, status)', r.text.includes('detail-photo') && r.text.includes('Dipakai di mesin') && r.text.includes('return-photo'));
     r = await admin.req('/sw.js');
-    check('sw.js: CACHE v8', r.text.includes('gudang-sparepart-v8'));
+    check('sw.js: CACHE v9', r.text.includes('gudang-sparepart-v9'));
   } finally {
     server.kill();
     await new Promise((r) => setTimeout(r, 500));

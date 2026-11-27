@@ -669,30 +669,64 @@ $('#btn-run-photo-search').addEventListener('click', async () => {
 });
 
 // ---------- ambil ----------
+let lastTakeQuery = '';
+function selectTakeItem(item) {
+  takeItem = item;
+  $('#take-suggestions').classList.add('hidden');
+  $('#take-error').classList.add('hidden');
+  $('#take-item').innerHTML = '<div class="row"><span class="r-stock">' + fmt(item.stock) + ' <small>' + esc(item.unit) + '</small></span>'
+    + '<span class="r-name">' + esc(item.name) + '</span>'
+    + '<div class="r-sub">' + esc(item.fd_code || '') + ' • Rak ' + esc(item.rack || '-') + ' • Shaf ' + esc(item.shelf || '-') + ' • Box ' + esc(item.jolly_box || '-') + '</div></div>';
+  $('#take-item').classList.remove('hidden');
+  $('#take-fields').classList.remove('hidden');
+  $('#take-qty').focus();
+}
+function renderTakeSuggestions(items) {
+  const box = $('#take-suggestions');
+  // batasi 8 saran (server men-clamp perPage minimal 10, jadi cap ada di client)
+  const shown = items.slice(0, 8);
+  box.innerHTML = '<p class="muted small">Pilih barang berdasarkan nama:</p>' + shown.map((it) => '<button type="button" class="row" data-take-suggest="' + it.id + '">'
+    + '<span class="r-stock">' + fmt(it.stock) + ' <small>' + esc(it.unit) + '</small></span>'
+    + '<span class="r-name">' + esc(it.name) + '</span>'
+    + '<div class="r-sub">' + esc(it.fd_code || it.barcode || '') + ' • Rak ' + esc(it.rack || '-') + ' • Shaf ' + esc(it.shelf || '-') + ' • Box ' + esc(it.jolly_box || '-') + '</div></button>').join('');
+  box.classList.remove('hidden');
+  // mousedown (bukan click) + preventDefault: pemilihan jalan sebelum input
+  // kehilangan fokus, jadi daftar saran tidak sempat di-render ulang oleh
+  // event change lalu menghilangkan tombol yang sedang diketuk.
+  box.querySelectorAll('[data-take-suggest]').forEach((b) => b.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const it = shown.find((x) => x.id === +b.dataset.takeSuggest);
+    if (it) selectTakeItem(it);
+  }));
+}
 async function lookupTake() {
   const code = $('#take-code').value.trim();
   const errEl = $('#take-error');
   errEl.classList.add('hidden');
+  $('#take-suggestions').classList.add('hidden');
   $('#take-item').classList.add('hidden');
   $('#take-fields').classList.add('hidden');
   takeItem = null;
-  if (!code) return;
+  if (!code) { lastTakeQuery = ''; return; }
+  if (code === lastTakeQuery) return; // Enter/blur ulang dengan teks sama: jangan render ulang
+  lastTakeQuery = code;
   try {
+    // jalur cepat: Kode FD / barcode persis
     const r = await api('/api/items/lookup?code=' + encodeURIComponent(code));
-    takeItem = r.item;
-    $('#take-item').innerHTML = '<div class="row"><span class="r-stock">' + fmt(r.item.stock) + ' <small>' + esc(r.item.unit) + '</small></span>'
-      + '<span class="r-name">' + esc(r.item.name) + '</span>'
-      + '<div class="r-sub">' + esc(r.item.fd_code || '') + ' • Rak ' + esc(r.item.rack || '-') + ' • Shaf ' + esc(r.item.shelf || '-') + ' • Box ' + esc(r.item.jolly_box || '-') + '</div></div>';
-    $('#take-item').classList.remove('hidden');
-    $('#take-fields').classList.remove('hidden');
-    $('#take-qty').focus();
+    selectTakeItem(r.item);
   } catch (e) {
-    errEl.textContent = e.message;
+    // bukan kode: cari berdasarkan nama (sebagian, tanpa peduli huruf besar/kecil)
+    try {
+      const r = await api('/api/items?search=' + encodeURIComponent(code) + '&filter=all&page=1&perPage=8');
+      if (r.items && r.items.length) { renderTakeSuggestions(r.items); return; }
+    } catch (_) { /* jatuh ke pesan tidak ditemukan */ }
+    errEl.textContent = 'Barang dengan kode atau nama "' + code + '" tidak ditemukan.';
     errEl.classList.remove('hidden');
   }
 }
 $('#take-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); lookupTake(); } });
 $('#take-code').addEventListener('change', lookupTake);
+$('#take-code').addEventListener('input', () => { $('#take-suggestions').classList.add('hidden'); });
 $('#btn-save-take').addEventListener('click', async () => {
   if (!takeItem) { toast('Pilih barang dulu (ketik Kode FD / barcode).'); return; }
   const btn = $('#btn-save-take');
@@ -702,6 +736,8 @@ $('#btn-save-take').addEventListener('click', async () => {
     toast('Pengambilan tersimpan. Stok "' + r.name + '" sisa ' + fmt(r.balance) + '.');
     $('#take-code').value = ''; $('#take-qty').value = '1'; $('#take-machine').value = ''; $('#take-by').value = '';
     $('#take-item').classList.add('hidden'); $('#take-fields').classList.add('hidden');
+    $('#take-suggestions').classList.add('hidden');
+    lastTakeQuery = '';
     takeItem = null;
     loadTakeRecent();
   } catch (e) { toast(e.message); }

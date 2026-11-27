@@ -287,7 +287,7 @@ async function waitUp() {
     check('app.js: simpan SO mengirim date dari date picker', r.text.includes("date: $('#so-date').value"));
     check('app.js: timeOf menampilkan jam WIB (geser +7 jam dari UTC)', r.text.includes('7 * 3600 * 1000') && r.text.includes('function timeOf'));
     r = await admin.req('/sw.js');
-    check('sw.js: CACHE v8', r.text.includes("gudang-sparepart-v8"));
+    check('sw.js: CACHE v9', r.text.includes("gudang-sparepart-v9"));
   } finally {
     server.kill();
     await new Promise((r) => setTimeout(r, 500));
