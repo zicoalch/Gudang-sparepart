@@ -116,7 +116,7 @@ async function waitUp() {
     check('ambil 2 dari MASKER KAIN FD100001 (stok 10->8)', r.status === 200 && r.json.balance === 8, JSON.stringify(r.json));
     r = await admin.req('/api/items/' + idMasker1);
     check('kartu stok mencatat pengambilan + mesin + pengambil',
-      r.json.card.length > 0 && JSON.stringify(r.json.card).includes('Davin') && JSON.stringify(r.json.card).includes('BLOWMOULD'));
+      r.json.card.length > 0 && JSON.stringify(r.json.card).includes('DAVIN') && JSON.stringify(r.json.card).includes('BLOWMOULD'));
     r = await admin.j('/api/take', { itemId: idMasker2, qty: 99, machine: 'X', takenBy: 'Davin' });
     check('ambil melebihi stok (FD100002 sisa 3) tetap ditolak', r.status === 400 && /Stok tidak cukup/.test(r.json.error || ''), JSON.stringify(r.json));
 
@@ -152,7 +152,7 @@ async function waitUp() {
       r.text.includes('sementara fetch jalan, barang mungkin sudah terpilih')
       && r.text.includes('jangan tampilkan saran bila barang sudah terpilih sementara itu'));
     r = await admin.req('/sw.js');
-    check('sw.js: CACHE v13', r.text.includes('gudang-sparepart-v13'));
+    check('sw.js: CACHE v15', r.text.includes('gudang-sparepart-v15'));
 
     console.log('== 8. Simulasi DOM: pencarian LIVE saat mengetik (jsdom) ==');
     if (!JSDOM) {

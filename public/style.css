@@ -135,7 +135,9 @@ label small { font-weight: 400; color: var(--muted); }
 .toolbar { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; align-items: center; }
 .toolbar input[type=search] { flex: 1; min-width: 180px; margin: 0; }
 .toolbar select { width: auto; margin: 0; }
-.pager { display: flex; justify-content: space-between; align-items: center; margin: 14px 0; }
+/* infinite scroll — sentinel pemicu muat halaman berikut + status ujung daftar */
+.sentinel { min-height: 1px; }
+.scroll-status { text-align: center; }
 
 /* tabel kartu stok */
 table { width: 100%; border-collapse: collapse; font-size: 14px; }

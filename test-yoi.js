@@ -120,7 +120,7 @@ async function waitUp() {
 
     console.log('== 6. Frontend baru ikut ter-serve ==');
     r = await admin.req('/app.js');
-    check('app.js memuat fmtMoi/usageLine', r.text.includes('fmtMoi') && r.text.includes('usageLine') && r.text.includes('Pemakaian — YOI / MOI'));
+    check('app.js memuat fmtMoi + kartu YOI/MOI', r.text.includes('fmtMoi') && r.text.includes('Pemakaian — YOI / MOI') && r.text.includes('<dt>MOI</dt>'));
     r = await admin.req('/index.html');
     check('index.html memuat penjelasan MOI/YOI', r.text.includes('MOI = stok / rata-rata pakai per bulan'));
   } finally {

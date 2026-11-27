@@ -550,10 +550,10 @@ function validateItemInput(b) {
   }
   return {
     data: {
-      name, barcode: cleanStr(b.barcode), fd_code: cleanStr(b.fd_code),
-      stock, rack: cleanStr(b.rack), unit: cleanStr(b.unit) || 'PCS',
-      shelf: cleanStr(b.shelf), jolly_box: cleanStr(b.jolly_box),
-      category: cleanStr(b.category), notes: cleanStr(b.notes), photo,
+      name, barcode: upperName(b.barcode), fd_code: upperName(b.fd_code),
+      stock, rack: upperName(b.rack), unit: upperName(b.unit) || 'PCS',
+      shelf: upperName(b.shelf), jolly_box: upperName(b.jolly_box),
+      category: upperName(b.category), notes: upperName(b.notes), photo,
     },
   };
 }
@@ -611,7 +611,7 @@ app.post('/api/items/:id/adjust', requireAuth, requireAdmin, (req, res) => {
   const id = parseInt(req.params.id, 10);
   const qty = parseInt(req.body.qty, 10);
   const kind = req.body.kind === 'out' ? 'out' : 'in';
-  const note = cleanStr(req.body.note) || (kind === 'in' ? 'Stok masuk' : 'Stok keluar');
+  const note = upperName(req.body.note) || (kind === 'in' ? 'Stok masuk' : 'Stok keluar');
   if (isNaN(qty) || qty <= 0) return fail(res, 400, 'Jumlah harus angka lebih dari 0.');
   const r = withTx(() => {
     const row = db.prepare('SELECT * FROM items WHERE id = ?').get(id);
@@ -631,8 +631,8 @@ app.post('/api/items/:id/adjust', requireAuth, requireAdmin, (req, res) => {
 app.post('/api/take', requireAuth, (req, res) => {
   const itemId = parseInt(req.body.itemId, 10);
   const qty = parseInt(req.body.qty, 10);
-  const machine = cleanStr(req.body.machine);
-  const takenBy = cleanStr(req.body.takenBy);
+  const machine = upperName(req.body.machine);
+  const takenBy = upperName(req.body.takenBy);
   if (isNaN(itemId)) return fail(res, 400, 'Barang belum dipilih.');
   if (isNaN(qty) || qty <= 0) return fail(res, 400, 'Jumlah harus angka lebih dari 0.');
   if (!takenBy) return fail(res, 400, 'Nama pemakai wajib diisi.');
@@ -653,10 +653,16 @@ app.post('/api/take', requireAuth, (req, res) => {
 app.get('/api/takes/recent', requireAuth, (req, res) => {
   // hanya pengambilan biasa — pergerakan Pinjam / Kembali (Pinjam) punya
   // history sendiri di menu Pinjam, dan part yang dibawa supplier punya
-  // history sendiri di menu Supplier, jadi tidak ikut di sini
+  // history sendiri di menu Supplier, jadi tidak ikut di sini.
+  // Mendukung page/perPage untuk infinite scroll di menu Ambil (tanpa
+  // param = 20 pertama, sama seperti sebelum ada paginasi).
+  const page = Math.max(1, parseInt(req.query.page || '1', 10));
+  const perPage = Math.min(100, Math.max(10, parseInt(req.query.perPage || '20', 10)));
+  const w = `WHERE m.kind = 'out' AND m.note != 'Pinjam' AND m.note NOT LIKE 'Dibawa supplier%'`;
+  const total = db.prepare(`SELECT COUNT(*) c FROM moves m JOIN items i ON i.id = m.item_id ${w}`).get().c;
   const rows = db.prepare(`SELECT m.*, i.name AS item_name, i.fd_code FROM moves m
-    JOIN items i ON i.id = m.item_id WHERE m.kind = 'out' AND m.note != 'Pinjam' AND m.note NOT LIKE 'Dibawa supplier%' ORDER BY m.id DESC LIMIT 20`).all();
-  ok(res, { takes: rows });
+    JOIN items i ON i.id = m.item_id ${w} ORDER BY m.id DESC LIMIT ? OFFSET ?`).all(perPage, (page - 1) * perPage);
+  ok(res, { takes: rows, total, page, perPage, pages: Math.max(1, Math.ceil(total / perPage)) });
 });
 
 // ---------- detail / hapus / ubah satu catatan pengambilan ----------
@@ -726,8 +732,8 @@ app.delete('/api/takes/:id', requireAuth, requireAdmin, (req, res) => {
 app.put('/api/takes/:id', requireAuth, requireAdmin, (req, res) => {
   const id = parseInt(req.params.id, 10);
   const qty = parseInt(req.body.qty, 10);
-  const takenBy = cleanStr(req.body.taken_by);
-  const machine = cleanStr(req.body.machine);
+  const takenBy = upperName(req.body.taken_by);
+  const machine = upperName(req.body.machine);
   if (isNaN(qty) || qty <= 0) return fail(res, 400, 'Jumlah harus angka lebih dari 0.');
   if (!takenBy) return fail(res, 400, 'Nama pemakai wajib diisi.');
   const r = withTx(() => {
@@ -758,7 +764,7 @@ app.get('/api/tools', requireAuth, (req, res) => {
 });
 
 app.post('/api/tools', requireAuth, (req, res) => {
-  const name = cleanStr(req.body.name);
+  const name = upperName(req.body.name);
   if (!name) return fail(res, 400, 'Nama tools wajib diisi.');
   const dup = db.prepare('SELECT id FROM tools WHERE name = ? COLLATE NOCASE').get(name);
   if (dup) return fail(res, 409, 'Tools "' + name + '" sudah ada di daftar.');
@@ -803,8 +809,8 @@ function loanRow(r) {
 
 app.post('/api/loans', requireAuth, (req, res) => {
   const qty = parseInt(req.body.qty, 10);
-  const borrower = cleanStr(req.body.borrower);
-  const machine = cleanStr(req.body.machine || ''); // opsional: mesin yang dipakai
+  const borrower = upperName(req.body.borrower);
+  const machine = upperName(req.body.machine || ''); // opsional: mesin yang dipakai
   if (isNaN(qty) || qty <= 0) return fail(res, 400, 'Jumlah harus angka lebih dari 0.');
   if (!borrower) return fail(res, 400, 'Nama peminjam wajib diisi.');
   let tool = null;
@@ -814,7 +820,7 @@ app.post('/api/loans', requireAuth, (req, res) => {
     tool = db.prepare('SELECT * FROM tools WHERE id = ?').get(toolId);
     if (!tool) return fail(res, 404, 'Tools tidak ditemukan.');
   } else {
-    const name = cleanStr(req.body.tool || req.body.name || '');
+    const name = upperName(req.body.tool || req.body.name || '');
     if (!name) return fail(res, 400, 'Nama tools belum diisi.');
     tool = db.prepare('SELECT * FROM tools WHERE name = ? COLLATE NOCASE').get(name);
     if (!tool) return fail(res, 404, 'Tools "' + name + '" belum ada di daftar. Tambahkan dulu di menu Peminjaman Tools.');
@@ -934,7 +940,7 @@ function supplierLoanRow(r) {
 
 app.post('/api/supplier-loans', requireAuth, requireAdmin, (req, res) => {
   const qty = parseInt(req.body.qty, 10);
-  const supplier = cleanStr(req.body.supplier);
+  const supplier = upperName(req.body.supplier);
   const purpose = cleanStr(req.body.purpose);
   if (isNaN(qty) || qty <= 0) return fail(res, 400, 'Jumlah harus angka lebih dari 0.');
   if (!supplier) return fail(res, 400, 'Nama supplier wajib diisi.');
@@ -948,12 +954,12 @@ app.post('/api/supplier-loans', requireAuth, requireAdmin, (req, res) => {
     item = db.prepare('SELECT * FROM items WHERE id = ?').get(itemId);
     if (!item) return fail(res, 404, 'Barang tidak ditemukan.');
   } else {
-    const code = cleanStr(req.body.code || '');
+    const code = upperName(req.body.code || '');
     if (!code) return fail(res, 400, 'Kode FD / barcode belum diisi.');
     item = db.prepare('SELECT * FROM items WHERE UPPER(fd_code) = UPPER(?) OR UPPER(barcode) = UPPER(?) LIMIT 1').get(code, code);
     if (!item) {
       // jalur non-stok: kode tidak dikenal — catat manual, tanpa ubah stok
-      manualName = cleanStr(req.body.manualName || req.body.manual_name || '');
+      manualName = upperName(req.body.manualName || req.body.manual_name || '');
       if (!manualName) return fail(res, 400, 'Kode tidak ada di stok — isi nama part secara manual.');
       manualCode = code;
     }
@@ -1092,7 +1098,7 @@ app.post('/api/so', requireAuth, requireAdmin, (req, res) => {
     item = db.prepare('SELECT * FROM items WHERE id = ?').get(itemId);
     if (!item) return fail(res, 404, 'Barang tidak ditemukan.');
   } else {
-    const code = cleanStr(req.body.code || '');
+    const code = upperName(req.body.code || '');
     if (!code) return fail(res, 400, 'Kode FD / barcode belum diisi.');
     item = db.prepare('SELECT * FROM items WHERE fd_code = ? OR barcode = ? LIMIT 1').get(code, code);
     if (!item) return fail(res, 404, 'Barang dengan kode "' + code + '" tidak ditemukan.');
@@ -1220,9 +1226,14 @@ app.get('/api/history', requireAuth, requireAdmin, (req, res) => {
     const totalKeluar = rows.reduce((s, r) => s + r.keluar, 0);
     return ok(res, { date, mode: 'day', rows, totalMasuk, totalKeluar });
   }
+  // mode recent: 60 terakhir — mendukung page/perPage untuk infinite
+  // scroll di menu Riwayat (tanpa param = 60 pertama, sama seperti dulu).
+  const page = Math.max(1, parseInt(req.query.page || '1', 10));
+  const perPage = Math.min(100, Math.max(10, parseInt(req.query.perPage || '60', 10)));
+  const total = db.prepare(`SELECT COUNT(*) c FROM moves m JOIN items i ON i.id = m.item_id`).get().c;
   const rows = db.prepare(`SELECT m.*, i.name AS item_name, i.fd_code FROM moves m
-    JOIN items i ON i.id = m.item_id ORDER BY m.id DESC LIMIT 60`).all();
-  ok(res, { mode: 'recent', rows });
+    JOIN items i ON i.id = m.item_id ORDER BY m.id DESC LIMIT ? OFFSET ?`).all(perPage, (page - 1) * perPage);
+  ok(res, { mode: 'recent', rows, total, page, perPage, pages: Math.max(1, Math.ceil(total / perPage)) });
 });
 
 // ---------- impor Excel ----------
@@ -1285,16 +1296,16 @@ function mapImportRows(rawRows, mapping) {
   for (const r of rawRows) {
     const get = (f) => (mapping[f] === undefined ? '' : (r[mapping[f]] ?? ''));
     const name = upperName(get('name'));
-    const fd = cleanStr(get('fd_code'));
+    const fd = upperName(get('fd_code'));
     let stock = toInt(get('stock'));
     if (stock == null) stock = toInt(get('stock_fallback'));
     if (stock == null) stock = 0;
     const row = {
-      name, fd_code: fd, barcode: cleanStr(get('barcode')),
-      stock: Math.max(0, stock), rack: cleanStr(get('rack')),
-      unit: cleanStr(get('unit')) || 'PCS', shelf: cleanStr(get('shelf')),
-      jolly_box: cleanStr(get('jolly_box')), category: cleanStr(get('category')),
-      notes: cleanStr(get('notes')),
+      name, fd_code: fd, barcode: upperName(get('barcode')),
+      stock: Math.max(0, stock), rack: upperName(get('rack')),
+      unit: upperName(get('unit')) || 'PCS', shelf: upperName(get('shelf')),
+      jolly_box: upperName(get('jolly_box')), category: upperName(get('category')),
+      notes: upperName(get('notes')),
     };
     const empty = !row.name && !row.fd_code && !row.barcode;
     const valid = !!row.name;

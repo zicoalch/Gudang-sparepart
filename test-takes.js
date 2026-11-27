@@ -96,7 +96,7 @@ async function stockOf(admin, id) {
     r = await admin.req('/api/takes/' + takeA.id);
     check('detail catatan #1 bisa dibuka (GET)', r.status === 200 && r.json.take && r.json.take.id === takeA.id && r.json.take.editable === true, 'status=' + r.status);
     check('detail memuat nama + Kode FD + mesin + pemakai + pencatat',
-      r.json.take.item_name === 'MASKER KAIN' && r.json.take.fd_code === 'FD200001' && r.json.take.machine === 'BLOWMOULD' && r.json.take.taken_by === 'Davin' && r.json.take.created_by === 'zico',
+      r.json.take.item_name === 'MASKER KAIN' && r.json.take.fd_code === 'FD200001' && r.json.take.machine === 'BLOWMOULD' && r.json.take.taken_by === 'DAVIN' && r.json.take.created_by === 'zico',
       JSON.stringify(r.json.take));
     r = await admin.req('/api/takes/' + takeA.id, { method: 'DELETE' });
     check('hapus catatan #1 -> 200 + stok baru 15', r.status === 200 && r.json.balance === 15, JSON.stringify(r.json));
@@ -136,7 +136,7 @@ async function stockOf(admin, id) {
     r = await admin.j('/api/takes/' + takeBaut.id, { qty: 6, taken_by: 'Eko', machine: 'LABEL' }, 'PUT');
     check('edit hanya nama+mesin -> stok tetap 14', r.status === 200 && r.json.balance === 14, JSON.stringify(r.json));
     r = await admin.req('/api/takes/' + takeBaut.id);
-    check('detail setelah edit nama Eko + mesin LABEL', r.json.take.taken_by === 'Eko' && r.json.take.machine === 'LABEL' && r.json.take.qty === 6);
+    check('detail setelah edit nama Eko + mesin LABEL', r.json.take.taken_by === 'EKO' && r.json.take.machine === 'LABEL' && r.json.take.qty === 6);
     check('stok tetap 14 setelah edit nama/mesin', (await stockOf(admin, idBaut)) === 14);
     r = await admin.j('/api/takes/' + takeBaut.id, { qty: 99, taken_by: 'Eko', machine: 'LABEL' }, 'PUT');
     check('edit qty 6->99 (tambahan 93 > stok 14) -> DITOLAK 400', r.status === 400, 'status=' + r.status + ' ' + JSON.stringify(r.json).slice(0, 150));
@@ -202,7 +202,7 @@ async function stockOf(admin, id) {
     r = await admin.j('/api/items/' + idBaut + '/adjust', { qty: 2, kind: 'out', note: 'Stok keluar' });
     check('adjust keluar 2 (stok 14->12)', r.status === 200 && r.json.balance === 12, JSON.stringify(r.json));
     r = await admin.req('/api/takes/recent');
-    const adjRow = (r.json.takes || []).find((t) => t.item_id === idBaut && t.qty === 2 && t.note === 'Stok keluar');
+    const adjRow = (r.json.takes || []).find((t) => t.item_id === idBaut && t.qty === 2 && t.note === 'STOK KELUAR');
     check('adjust keluar muncul di Pengambilan terakhir', !!adjRow, JSON.stringify((r.json.takes || []).slice(0, 3)));
     r = await admin.req('/api/takes/' + adjRow.id);
     check('detail adjust keluar bisa dibuka, editable=false', r.status === 200 && r.json.take.editable === false, 'status=' + r.status + ' ' + JSON.stringify(r.json.take).slice(0, 200));
@@ -212,7 +212,7 @@ async function stockOf(admin, id) {
     check('edit adjust keluar -> 400 (bukan catatan pengambilan)', r.status === 400, 'status=' + r.status);
     check('stok tetap 12 setelah percobaan hapus/edit adjust ditolak', (await stockOf(admin, idBaut)) === 12);
 
-    console.log('== 8. Cek level kode: endpoint + UI detail/edit/hapus + SW v13 ==');
+    console.log('== 8. Cek level kode: endpoint + UI detail/edit/hapus + SW v14 ==');
     r = await admin.req('/index.html');
     check('index.html memuat view-take-detail + take-detail-content', r.status === 200 && r.text.includes('view-take-detail') && r.text.includes('take-detail-content'));
     r = await admin.req('/app.js');
@@ -220,7 +220,7 @@ async function stockOf(admin, id) {
     check('app.js memuat tombol Hapus catatan + Ubah + Simpan perubahan', r.text.includes('btn-del-take') && r.text.includes('btn-edit-take') && r.text.includes('btn-save-take-edit'));
     check('app.js: baris recent memakai data-take (id moves, bukan id barang)', r.text.includes('data-take='));
     r = await admin.req('/sw.js');
-    check('sw.js CACHE v13', r.status === 200 && r.text.includes('gudang-sparepart-v13'), r.text.slice(0, 200));
+    check('sw.js CACHE v15', r.status === 200 && r.text.includes('gudang-sparepart-v15'), r.text.slice(0, 200));
     const serverSrc = fs.readFileSync('server.js', 'utf8');
     check('server.js memuat DELETE /api/takes/:id + PUT /api/takes/:id', serverSrc.includes("app.delete('/api/takes/:id'") && serverSrc.includes("app.put('/api/takes/:id'"));
     check('server.js: hapus/edit memakai id moves (WHERE id = ?), bukan item_id', serverSrc.includes('DELETE FROM moves WHERE id = ?'));
@@ -277,7 +277,7 @@ async function stockOf(admin, id) {
       check('klik baris -> view take-detail terbuka', !isHidden(doc.querySelector('#view-take-detail')));
       const detailText = () => doc.querySelector('#take-detail-content').textContent;
       check('detail memuat nama barang + jumlah + mesin + pemakai',
-        detailText().includes('KUNCI PAS 17') && detailText().includes('2') && detailText().includes('BLOWMOULD') && detailText().includes('Davin'),
+        detailText().includes('KUNCI PAS 17') && detailText().includes('2') && detailText().includes('BLOWMOULD') && detailText().includes('DAVIN'),
         detailText().slice(0, 300));
       check('detail Admin memuat tombol Ubah + Hapus catatan',
         !!doc.querySelector('#btn-edit-take') && !!doc.querySelector('#btn-del-take'));
@@ -294,15 +294,15 @@ async function stockOf(admin, id) {
       click(doc.querySelector('#btn-edit-take'));
       await sleep(200);
       check('klik Ubah -> form edit tampil terisi nilai lama',
-        !isHidden(doc.querySelector('#take-edit-box')) && doc.querySelector('#take-edit-qty').value === '2' && doc.querySelector('#take-edit-by').value === 'Davin');
+        !isHidden(doc.querySelector('#take-edit-box')) && doc.querySelector('#take-edit-qty').value === '2' && doc.querySelector('#take-edit-by').value === 'DAVIN');
       doc.querySelector('#take-edit-qty').value = '1';
       doc.querySelector('#take-edit-by').value = 'Eko';
       doc.querySelector('#take-edit-machine').value = 'LABEL';
       click(doc.querySelector('#btn-save-take-edit'));
       await sleep(800);
       check('simpan edit qty 2->1 -> stok 6->7', (await stockOf(admin, idKunci)) === 7);
-      check('detail sesudah edit memuat qty 1 + Eko + LABEL',
-        detailText().includes('Eko') && detailText().includes('LABEL') && !detailText().includes('Davin'),
+      check('detail sesudah edit memuat qty 1 + EKO + LABEL',
+        detailText().includes('EKO') && detailText().includes('LABEL') && !detailText().includes('DAVIN'),
         detailText().slice(0, 300));
 
       // 9d. Hapus catatan yang baru diubah -> stok kembali 8, tinggal 1 catatan

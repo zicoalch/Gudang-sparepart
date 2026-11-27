@@ -67,7 +67,7 @@ async function waitUp() {
     r = await admin.j('/api/items', { name: 'BAUT FD', fd_code: 'FD013611', barcode: 'BARB001', stock: 10, unit: 'PCS', rack: 'RAK 3', shelf: 'G.1', jolly_box: '7', category: 'BAUT' });
     check('buat barang B FD013611 + barcode BARB001', r.status === 200 && r.json.id, JSON.stringify(r.json).slice(0, 120));
     r = await admin.j('/api/items', { name: 'MUR KECIL', fd_code: 'fd013612', stock: 0, unit: 'PCS' });
-    check('buat barang C fd kecil fd013612 (tersimpan huruf kecil)', r.status === 200 && r.json.id, JSON.stringify(r.json).slice(0, 120));
+    check('buat barang C fd kecil fd013612 (disimpan jadi FD013612)', r.status === 200 && r.json.id, JSON.stringify(r.json).slice(0, 120));
 
     console.log('== 3. Endpoint lookup (dipakai cek duplikat) ==');
     r = await admin.req('/api/items/lookup?code=' + encodeURIComponent('FD013610'));
@@ -77,7 +77,7 @@ async function waitUp() {
     r = await admin.req('/api/items/lookup?code=' + encodeURIComponent('FD013610 '));
     check('lookup "FD013610 " spasi ujung → 200 + barang A (trim)', r.status === 200 && r.json.item && r.json.item.id === idA, 'status=' + r.status);
     r = await admin.req('/api/items/lookup?code=' + encodeURIComponent('FD013612'));
-    check('lookup FD013612 huruf besar → 200, temukan barang C yg tersimpan huruf kecil', r.status === 200 && r.json.item && r.json.item.name === 'MUR KECIL', 'status=' + r.status);
+    check('lookup FD013612 huruf besar → 200, temukan barang C (fd kecil diketik, tersimpan kapital)', r.status === 200 && r.json.item && r.json.item.name === 'MUR KECIL' && r.json.item.fd_code === 'FD013612', 'status=' + r.status);
     r = await admin.req('/api/items/lookup?code=' + encodeURIComponent('BARB001'));
     check('lookup barcode BARB001 → 200 + barang B', r.status === 200 && r.json.item && r.json.item.name === 'BAUT FD', 'status=' + r.status);
     r = await admin.req('/api/items/lookup?code=' + encodeURIComponent('barb001'));
@@ -114,7 +114,7 @@ async function waitUp() {
     check('app: confirm simpan saat duplikat (ubah)', appJs.includes('Tetap simpan perubahan ini?'));
     check('app: submit menunggu cek segar sebelum simpan', appJs.includes('const dup = await checkFdDuplicate();'));
     check('app: reset form bersihkan peringatan + fdDupItem', appJs.includes("fdDupItem = null;") && appJs.includes("$('#add-fd-warning').classList.add('hidden')"));
-    check('sw.js: CACHE v13', swJs.includes("gudang-sparepart-v13"));
+    check('sw.js: CACHE v15', swJs.includes("gudang-sparepart-v15"));
 
     console.log('\n' + pass + ' lolos, ' + fail + ' gagal.');
     code = fail ? 1 : 0;

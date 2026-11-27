@@ -114,7 +114,7 @@ async function waitUp() {
     const loanA = r.json.loan.id;
     const dueMs = Date.parse(r.json.loan.due_at) - Date.parse(r.json.loan.taken_at);
     check('jatuh tempo = dibawa + 2 hari (setting default)', Math.abs(dueMs - 2 * 86400000) < 60000, 'selisih=' + dueMs + 'ms');
-    check('pinjaman mencatat supplier + purpose + pencatat', r.json.loan.supplier === 'PT Maju Jaya' && r.json.loan.purpose === 'contoh' && r.json.loan.taken_by === 'zico' && r.json.loan.non_stock === false, JSON.stringify(r.json.loan));
+    check('pinjaman mencatat supplier + purpose + pencatat', r.json.loan.supplier === 'PT MAJU JAYA' && r.json.loan.purpose === 'contoh' && r.json.loan.taken_by === 'zico' && r.json.loan.non_stock === false, JSON.stringify(r.json.loan));
     r = await admin.req('/api/items/lookup?code=FD013610');
     check('stok A sekarang 3', r.json.item.stock === 3, 'stock=' + r.json.item.stock);
     r = await admin.req('/api/items/' + idA);
@@ -268,7 +268,7 @@ async function waitUp() {
 
     console.log('== 12. Detail peminjaman supplier (GET single) ==');
     r = await admin.req('/api/supplier-loans/' + loanA);
-    check('GET /api/supplier-loans/:id memuat semua field detail (nama, Kode FD, qty, supplier, purpose, tanggal, status, foto)', r.status === 200 && r.json.loan.item_name === 'SEAL KARET 10MM' && r.json.loan.fd_code === 'FD013610' && r.json.loan.qty === 2 && r.json.loan.supplier === 'PT Maju Jaya' && r.json.loan.purpose === 'contoh' && r.json.loan.taken_at && r.json.loan.due_at && r.json.loan.status === 'dikembalikan' && r.json.loan.hasReturnPhoto === true && r.json.loan.non_stock === false && r.json.loan.reminder_days === 2 && !!r.json.loan.returned_at && r.json.loan.returned_by === 'zico', JSON.stringify(r.json.loan));
+    check('GET /api/supplier-loans/:id memuat semua field detail (nama, Kode FD, qty, supplier, purpose, tanggal, status, foto)', r.status === 200 && r.json.loan.item_name === 'SEAL KARET 10MM' && r.json.loan.fd_code === 'FD013610' && r.json.loan.qty === 2 && r.json.loan.supplier === 'PT MAJU JAYA' && r.json.loan.purpose === 'contoh' && r.json.loan.taken_at && r.json.loan.due_at && r.json.loan.status === 'dikembalikan' && r.json.loan.hasReturnPhoto === true && r.json.loan.non_stock === false && r.json.loan.reminder_days === 2 && !!r.json.loan.returned_at && r.json.loan.returned_by === 'zico', JSON.stringify(r.json.loan));
     r = await admin.req('/api/supplier-loans/' + loanNonStock);
     check('GET /api/supplier-loans/:id non-stok: manual_name/code + penanda non_stock', r.status === 200 && r.json.loan.non_stock === true && r.json.loan.manual_name === 'SEAL KARET CONTOH' && r.json.loan.manual_code === 'FD999999' && r.json.loan.item_name === 'SEAL KARET CONTOH', JSON.stringify(r.json.loan));
     r = await admin.req('/api/supplier-loans/' + loanC);
@@ -306,7 +306,7 @@ async function waitUp() {
     check('app.js: badge Terlambat + tombol Kembalikan + Tidak kembali', r.text.includes('⚠️ Terlambat') && r.text.includes('✅ Kembalikan') && r.text.includes('Tidak kembali'));
     check('app.js: simpan setting pengingat via PUT /api/settings/supplier-reminder-days', r.text.includes("'/api/settings/supplier-reminder-days'") && r.text.includes("'PUT'"));
     r = await admin.req('/sw.js');
-    check('sw.js: CACHE v13', r.text.includes('gudang-sparepart-v13'));
+    check('sw.js: CACHE v15', r.text.includes('gudang-sparepart-v15'));
   } finally {
     server.kill();
     await new Promise((r) => setTimeout(r, 500));

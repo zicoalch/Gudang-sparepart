@@ -116,7 +116,7 @@ async function waitUp() {
     const loanA = r.json.loan.id;
     const dueMs = Date.parse(r.json.loan.due_at) - Date.parse(r.json.loan.borrowed_at);
     check('jatuh tempo = pinjam + 48 jam (tools tetap 2 hari)', Math.abs(dueMs - 48 * 3600 * 1000) < 60000, 'selisih=' + dueMs + 'ms');
-    check('pinjaman mencatat nama tools + peminjam + username pencatat', r.json.loan.tool_name === 'KUNCI PAS 14' && r.json.loan.borrower === 'Budi' && r.json.loan.borrowed_by === 'zico', JSON.stringify(r.json.loan));
+    check('pinjaman mencatat nama tools + peminjam + username pencatat', r.json.loan.tool_name === 'KUNCI PAS 14' && r.json.loan.borrower === 'BUDI' && r.json.loan.borrowed_by === 'zico', JSON.stringify(r.json.loan));
     r = await admin.req('/api/items/lookup?code=FD013610');
     check('stok barang A TETAP 5 (pinjam tools tidak ubah stok)', r.json.item.stock === 5, 'stock=' + r.json.item.stock);
     r = await admin.req('/api/items/' + idA);
@@ -254,7 +254,7 @@ async function waitUp() {
     for (const x of (r.json.loans || [])) byIdM[x.id] = x;
     check('GET /api/loans memuat machine (BLOWMOULD + kosong)', byIdM[loanM] && byIdM[loanM].machine === 'BLOWMOULD' && byIdM[loanNoM] && byIdM[loanNoM].machine === '', JSON.stringify(byIdM[loanM]) + ' / ' + JSON.stringify(byIdM[loanNoM]));
     r = await admin.req('/api/loans/' + loanM);
-    check('GET /api/loans/:id memuat semua field detail (tools, qty, peminjam, mesin, tanggal, status, foto)', r.status === 200 && r.json.loan.tool_name === 'KUNCI PAS 14' && r.json.loan.qty === 1 && r.json.loan.borrower === 'Agus' && r.json.loan.machine === 'BLOWMOULD' && r.json.loan.borrowed_at && r.json.loan.due_at && r.json.loan.status === 'dipinjam' && r.json.loan.hasReturnPhoto === false, JSON.stringify(r.json.loan));
+    check('GET /api/loans/:id memuat semua field detail (tools, qty, peminjam, mesin, tanggal, status, foto)', r.status === 200 && r.json.loan.tool_name === 'KUNCI PAS 14' && r.json.loan.qty === 1 && r.json.loan.borrower === 'AGUS' && r.json.loan.machine === 'BLOWMOULD' && r.json.loan.borrowed_at && r.json.loan.due_at && r.json.loan.status === 'dipinjam' && r.json.loan.hasReturnPhoto === false, JSON.stringify(r.json.loan));
     r = await admin.req('/api/loans/99999');
     check('GET /api/loans/:id tidak ada -> 404', r.status === 404, 'status=' + r.status);
     r = await anon.req('/api/loans/' + loanM);
@@ -331,7 +331,7 @@ CREATE TABLE loans (id INTEGER PRIMARY KEY AUTOINCREMENT, tool_id INTEGER REFERE
     check('app.js: simpan pinjam kirim machine + tampil di baris history', r.text.includes("machine: $('#loan-machine').value") && r.text.includes('Mesin '));
     check('app.js: detail tampilkan foto bukti besar + semua field (mesin, tanggal, status)', r.text.includes('detail-photo') && r.text.includes('Dipakai di mesin') && r.text.includes('return-photo'));
     r = await admin.req('/sw.js');
-    check('sw.js: CACHE v13', r.text.includes('gudang-sparepart-v13'));
+    check('sw.js: CACHE v15', r.text.includes('gudang-sparepart-v15'));
   } finally {
     server.kill();
     await new Promise((r) => setTimeout(r, 500));

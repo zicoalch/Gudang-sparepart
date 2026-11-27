@@ -299,7 +299,7 @@ async function waitUp() {
     check('app.js: pilih saran batalkan live search tertunda (clearTimeout + soLiveSeq++)', r.text.includes('clearTimeout(soLiveTimer)') && r.text.includes('soLiveSeq++'));
     check('app.js: pilih saran tahan tap sentuh (touchstart)', r.text.includes("addEventListener('touchstart'") && r.text.includes('selectSoItem'));
     r = await admin.req('/sw.js');
-    check('sw.js: CACHE v13', r.text.includes("gudang-sparepart-v13"));
+    check('sw.js: CACHE v15', r.text.includes("gudang-sparepart-v15"));
     console.log('== 12. Label nav + pencarian LIVE di form SO (jsdom) ==');
     r = await admin.req('/');
     check('nav: tombol SO tertulis "📋 Stock Opname", data-view tetap so', r.text.includes('<button data-view="so">📋 Stock Opname</button>'));

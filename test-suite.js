@@ -113,7 +113,7 @@ class Jar {
   check('user boleh ambil (stok 2->1)', r.status === 200 && r.json.balance === 1, JSON.stringify(r.json));
   r = await admin.req('/api/items/' + fdId);
   check('kartu stok mencatat pengambilan + mesin + pengambil',
-    r.json.card.length > 0 && JSON.stringify(r.json.card).includes('Budi') && JSON.stringify(r.json.card).includes('BLOWMOULD'),
+    r.json.card.length > 0 && JSON.stringify(r.json.card).includes('BUDI') && JSON.stringify(r.json.card).includes('BLOWMOULD'),
     JSON.stringify(r.json.card).slice(0, 300));
   r = await user.j('/api/take', { itemId: fdId, qty: 5, machine: 'X', takenBy: 'Budi' });
   check('ambil melebihi stok ditolak + pesan jelas', r.status === 400 && /Stok tidak cukup/.test(r.json.error || '') && /Sisa 1/.test(r.json.error || ''), JSON.stringify(r.json));
@@ -130,7 +130,7 @@ class Jar {
   const headerRow = rows.find((x) => x && x[0] === 'Tanggal');
   check('ekspor punya kolom Mesin & Diambil oleh', headerRow && headerRow[5] === 'Mesin' && headerRow[6] === 'Diambil oleh', JSON.stringify(headerRow));
   const takeRow = rows.find((x) => x && x[1] === 'Pengambilan');
-  check('baris pengambilan ada mesin+pengambil di ekspor', takeRow && takeRow[5] === 'BLOWMOULD' && takeRow[6] === 'Budi', JSON.stringify(takeRow));
+  check('baris pengambilan ada mesin+pengambil di ekspor', takeRow && takeRow[5] === 'BLOWMOULD' && takeRow[6] === 'BUDI', JSON.stringify(takeRow));
 
   console.log('== 8. Ubah/hapus foto & proteksi ==');
   r = await admin.j('/api/items', { name: 'barang foto test', stock: 3, photo: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' });

@@ -4,7 +4,7 @@ const $$ = (s) => document.querySelectorAll(s);
 let ME = null;            // {username, role}
 let IS_ADMIN = false;
 let currentView = 'dashboard';
-let invPage = 1, invSearch = '', invFilter = 'all';
+let invSearch = '', invFilter = 'all';
 let importJobId = null, importSheet = null;
 let takeItem = null;
 let soItem = null;
@@ -238,39 +238,133 @@ $('#btn-export-out').addEventListener('click', () => {
   downloadHistoryExport($('#dash-date').value || localDate());
 });
 
+// ---------- infinite scroll (muat saat scroll) ----------
+// Satu pola untuk semua daftar panjang (Inventaris, Pengambilan terakhir,
+// Riwayat): halaman pertama dimuat, lalu saat sentinel di bawah daftar
+// masuk viewport, halaman berikutnya ditempel di bawah — tanpa tombol
+// halaman, tanpa lompat posisi scroll, tanpa duplikat.
+// cfg: { list (elemen atau () => elemen), sentinel, status, moreBtn,
+//   perPage, fetchPage(page) -> Promise<{rows, pages}>, render(rows),
+//   emptyText, endText }
+// - reset(): kosongkan daftar, muat ulang dari halaman 1 (dipakai saat
+//   ganti pencarian/filter/tanggal, atau saat tab dibuka ulang).
+// - setVisible(v): sembunyikan sentinel/status/tombol (dipakai Riwayat
+//   mode harian, yang ringkasannya per tanggal dan tidak memakai scroll
+//   tak berujung).
+// Bila IntersectionObserver tidak ada (browser sangat lama), tampilkan
+// tombol "Muat lebih" sebagai cadangan.
+function createInfiniteList(cfg) {
+  const st = { page: 0, loading: false, hasMore: true, seq: 0 };
+  let observer = null;
+  const listEl = () => (typeof cfg.list === 'function' ? cfg.list() : cfg.list);
+  function setStatus(t) { if (cfg.status) cfg.status.textContent = t || ''; }
+  function showMoreBtn(show) { if (cfg.moreBtn) cfg.moreBtn.classList.toggle('hidden', !show); }
+  function setupObserver() {
+    if (!('IntersectionObserver' in window)) { showMoreBtn(st.hasMore); return; }
+    if (observer) return;
+    observer = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) loadMore();
+    }, { rootMargin: '400px' });
+    observer.observe(cfg.sentinel);
+  }
+  async function loadMore() {
+    if (st.loading || !st.hasMore) return;
+    st.loading = true;
+    const seq = st.seq;
+    const page = st.page + 1;
+    showMoreBtn(false);
+    setStatus('Memuat…');
+    try {
+      const r = await cfg.fetchPage(page);
+      if (seq !== st.seq) return; // sudah di-reset (mis. ganti pencarian)
+      st.page = page;
+      if (page === 1 && !r.rows.length) {
+        listEl().innerHTML = '<p class="muted">' + esc(cfg.emptyText) + '</p>';
+        st.hasMore = false;
+        setStatus('');
+        return;
+      }
+      cfg.render(r.rows);
+      if (page >= r.pages) { st.hasMore = false; setStatus(cfg.endText); }
+      else setStatus('');
+      setupObserver();
+    } catch (e) {
+      setStatus('');
+      toast(e.message);
+      // hasMore tetap true: scroll berikutnya (atau tombol) mencoba lagi
+      showMoreBtn(!('IntersectionObserver' in window));
+    } finally {
+      if (seq === st.seq) st.loading = false;
+    }
+  }
+  function reset() {
+    st.seq++;
+    st.page = 0;
+    st.hasMore = true;
+    st.loading = false;
+    const el = listEl();
+    if (el) el.innerHTML = '';
+    showMoreBtn(false);
+    setStatus('Memuat…');
+    loadMore();
+  }
+  function setVisible(v) {
+    if (cfg.sentinel) cfg.sentinel.classList.toggle('hidden', !v);
+    if (cfg.status) cfg.status.classList.toggle('hidden', !v);
+    showMoreBtn(v && st.hasMore && !('IntersectionObserver' in window));
+  }
+  if (cfg.moreBtn) cfg.moreBtn.addEventListener('click', loadMore);
+  return { reset, loadMore, setVisible };
+}
+// Tempel baris-baris HTML ke daftar dan ikat event kliknya (hanya baris baru).
+function appendRows(list, html, bind) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const nodes = Array.from(tmp.children);
+  nodes.forEach((n) => list.appendChild(n));
+  nodes.forEach(bind);
+  return nodes;
+}
+
 // ---------- inventaris ----------
 let invTimer = null;
 $('#inv-search').addEventListener('input', (e) => {
   clearTimeout(invTimer);
-  invTimer = setTimeout(() => { invSearch = e.target.value.trim(); invPage = 1; loadInventory(); }, 350);
+  invTimer = setTimeout(() => { invSearch = e.target.value.trim(); loadInventory(); }, 350);
 });
-$('#inv-filter').addEventListener('change', (e) => { invFilter = e.target.value; invPage = 1; loadInventory(); });
-$('#inv-prev').addEventListener('click', () => { if (invPage > 1) { invPage--; loadInventory(); } });
-$('#inv-next').addEventListener('click', () => { invPage++; loadInventory(); });
+$('#inv-filter').addEventListener('change', (e) => { invFilter = e.target.value; loadInventory(); });
 
-async function loadInventory() {
-  try {
-    const r = await api('/api/items?search=' + encodeURIComponent(invSearch) + '&filter=' + invFilter + '&page=' + invPage + '&perPage=50');
-    if (r.page > r.pages) { invPage = r.pages; return loadInventory(); }
-    $('#inv-count').textContent = fmt(r.total) + ' barang';
-    $('#inv-page-info').textContent = 'Hal ' + r.page + ' / ' + r.pages;
-    const list = $('#inv-list');
-    if (!r.items.length) { list.innerHTML = '<p class="muted">Tidak ada barang yang cocok.</p>'; return; }
-    list.innerHTML = r.items.map((it) => {
-      const thumb = it.hasPhoto
-        ? '<img class="thumb" src="/api/items/' + it.id + '/photo" alt="Foto ' + esc(it.name) + '" loading="lazy">'
-        : '<span class="thumb thumb-empty">📦<span>Belum ada foto</span></span>';
-      const sub = (it.fd_code ? esc(it.fd_code) + ' • ' : '') + 'Rak ' + esc(it.rack || '-') + ' • Shaf ' + esc(it.shelf || '-') + ' • Box ' + esc(it.jolly_box || '-');
-      return '<button class="row" data-item="' + it.id + '">'
-        + thumb
-        + '<span class="r-stock ' + (it.stock <= 0 ? 'low' : '') + '">' + fmt(it.stock) + ' <small>' + esc(it.unit) + '</small></span>'
-        + '<span class="r-name">' + esc(it.name) + '</span>'
-        + '<div class="r-sub">' + sub + '</div>'
-        + '</button>';
-    }).join('');
-    list.querySelectorAll('[data-item]').forEach((b) => b.addEventListener('click', () => openDetail(+b.dataset.item, 'inventory')));
-  } catch (e) { $('#inv-list').innerHTML = '<p class="error">' + esc(e.message) + '</p>'; }
+function invRowHtml(it) {
+  const thumb = it.hasPhoto
+    ? '<img class="thumb" src="/api/items/' + it.id + '/photo" alt="Foto ' + esc(it.name) + '" loading="lazy">'
+    : '<span class="thumb thumb-empty">📦<span>Belum ada foto</span></span>';
+  const sub = (it.fd_code ? esc(it.fd_code) + ' • ' : '') + 'Rak ' + esc(it.rack || '-') + ' • Shaf ' + esc(it.shelf || '-') + ' • Box ' + esc(it.jolly_box || '-');
+  return '<button class="row" data-item="' + it.id + '">'
+    + thumb
+    + '<span class="r-stock ' + (it.stock <= 0 ? 'low' : '') + '">' + fmt(it.stock) + ' <small>' + esc(it.unit) + '</small></span>'
+    + '<span class="r-name">' + esc(it.name) + '</span>'
+    + '<div class="r-sub">' + sub + '</div>'
+    + '</button>';
 }
+const invInfinite = createInfiniteList({
+  list: $('#inv-list'),
+  sentinel: $('#inv-sentinel'),
+  status: $('#inv-status'),
+  moreBtn: $('#inv-more'),
+  perPage: 50,
+  emptyText: 'Tidak ada barang yang cocok.',
+  endText: 'Semua barang sudah ditampilkan.',
+  fetchPage: async (page) => {
+    const r = await api('/api/items?search=' + encodeURIComponent(invSearch) + '&filter=' + invFilter + '&page=' + page + '&perPage=50');
+    $('#inv-count').textContent = fmt(r.total) + ' barang';
+    return { rows: r.items, pages: r.pages };
+  },
+  render: (rows) => {
+    appendRows($('#inv-list'), rows.map(invRowHtml).join(''),
+      (b) => b.addEventListener('click', () => openDetail(+b.dataset.item, 'inventory')));
+  },
+});
+function loadInventory() { invInfinite.reset(); }
 // ---------- cetak QR ----------
 function printQrCodes(items, title) {
   const area = $('#print-area');
@@ -382,11 +476,25 @@ $('#add-fd').addEventListener('blur', () => {
   clearTimeout(fdCheckTimer);
   checkFdDuplicate();
 });
-$('#add-name').addEventListener('input', (e) => {
-  const pos = e.target.selectionStart;
-  e.target.value = e.target.value.toUpperCase();
-  try { e.target.setSelectionRange(pos, pos); } catch (_) {}
-});
+// Semua penginputan teks otomatis HURUF KAPITAL saat diketik (permintaan user
+// 27 Nov 2026). Satu listener di document (fase capture) supaya berlaku juga
+// untuk input yang dibuat dinamis (form edit catatan, adj-note) dan jalan
+// SEBELUM handler live-search / cek-duplikat membaca nilainya.
+// DIKECUALIKAN: password (sensitif huruf besar-kecil), username login/buat
+// akun (identifier — server sudah menormalkan ke huruf kecil), dan
+// number/date/file/hidden/radio (bukan teks).
+document.addEventListener('input', (e) => {
+  const t = e.target;
+  if (!t || t.tagName !== 'INPUT') return;
+  const type = (t.type || 'text').toLowerCase();
+  if (type !== 'text' && type !== 'search') return;
+  if (t.id === 'login-username' || t.id === 'new-user-name') return;
+  const v = t.value;
+  if (!v || v === v.toUpperCase()) return;
+  const s = t.selectionStart, en = t.selectionEnd;
+  t.value = v.toUpperCase();
+  try { t.setSelectionRange(s, en); } catch (_) {}
+}, true);
 $('#btn-cancel-add').addEventListener('click', () => showView(detailBack === 'detail' ? 'inventory' : (detailId ? 'detail' : 'inventory')));
 $('#btn-photo-remove').addEventListener('click', () => {
   addPhotoData = '';
@@ -825,20 +933,29 @@ $('#btn-save-take').addEventListener('click', async () => {
   } catch (e) { toast(e.message); }
   btn.disabled = false;
 });
-async function loadTakeRecent() {
-  try {
-    const r = await api('/api/takes/recent');
-    const list = $('#take-recent');
-    if (!r.takes.length) { list.innerHTML = '<p class="muted">Belum ada pengambilan.</p>'; return; }
-    list.innerHTML = r.takes.map((m) => `
+const takeInfinite = createInfiniteList({
+  list: $('#take-recent'),
+  sentinel: $('#take-sentinel'),
+  status: $('#take-status'),
+  moreBtn: $('#take-more'),
+  perPage: 20,
+  emptyText: 'Belum ada pengambilan.',
+  endText: 'Semua pengambilan sudah ditampilkan.',
+  fetchPage: async (page) => {
+    const r = await api('/api/takes/recent?page=' + page + '&perPage=20');
+    return { rows: r.takes, pages: r.pages };
+  },
+  render: (rows) => {
+    appendRows($('#take-recent'), rows.map((m) => `
       <button class="row" data-take="${m.id}">
         <span class="r-stock">−${fmt(m.qty)}</span>
         <span class="r-name">${esc(m.item_name)}</span>
         <div class="r-sub">${esc(m.fd_code || '')} • ${esc(m.machine || '-')} • ${esc(m.taken_by || '-')} • ${fmtDateID(m.date)} ${timeOf(m.created_at)}</div>
-      </button>`).join('');
-    list.querySelectorAll('[data-take]').forEach((b) => b.addEventListener('click', () => openTakeDetail(+b.dataset.take, 'take')));
-  } catch (e) { /* diam */ }
-}
+      </button>`).join(''),
+      (b) => b.addEventListener('click', () => openTakeDetail(+b.dataset.take, 'take')));
+  },
+});
+function loadTakeRecent() { takeInfinite.reset(); }
 
 // ---------- detail catatan pengambilan (Ambil) ----------
 // Baris "Pengambilan terakhir" bisa diklik → tampilkan semua informasi catatan
@@ -1572,13 +1689,46 @@ $('#btn-export-history').addEventListener('click', () => {
   downloadHistoryExport($('#hist-date').value || '');
 });
 $('#hist-date').addEventListener('change', loadHistory);
+function ensureHistList() {
+  let list = $('#hist-list');
+  if (!list) {
+    $('#hist-content').innerHTML = '<div class="list" id="hist-list"></div>';
+    list = $('#hist-list');
+  }
+  return list;
+}
+const histInfinite = createInfiniteList({
+  list: ensureHistList,
+  sentinel: $('#hist-sentinel'),
+  status: $('#hist-status'),
+  moreBtn: $('#hist-more'),
+  perPage: 60,
+  emptyText: 'Belum ada pergerakan.',
+  endText: 'Semua riwayat sudah ditampilkan.',
+  fetchPage: async (page) => {
+    const r = await api('/api/history?page=' + page + '&perPage=60');
+    return { rows: r.rows, pages: r.pages };
+  },
+  render: (rows) => {
+    appendRows(ensureHistList(), rows.map((m) => `
+      <button class="row" data-item="${m.item_id}">
+        <span class="r-stock">${m.kind === 'in' ? '+' : '−'}${fmt(m.qty)}</span>
+        <span class="r-name">${esc(m.item_name)}</span>
+        <div class="r-sub">${esc(m.note || (m.kind === 'in' ? 'Stok masuk' : 'Pengambilan'))} • ${esc(m.machine || '')} ${esc(m.taken_by || '')} • ${fmtDateID(m.date)} ${timeOf(m.created_at)} • Sisa ${fmt(m.balance)}</div>
+      </button>`).join(''),
+      (b) => b.addEventListener('click', () => openDetail(+b.dataset.item, 'history')));
+  },
+});
 async function loadHistory() {
   const date = $('#hist-date').value;
   const box = $('#hist-content');
-  box.innerHTML = '<p class="muted">Memuat…</p>';
-  try {
-    const r = await api('/api/history' + (date ? '?date=' + date : ''));
-    if (r.mode === 'day') {
+  if (date) {
+    // mode harian: ringkasan per barang pada tanggal itu (tidak di-scroll
+    // tak berujung — datanya sudah dibatasi satu tanggal).
+    histInfinite.setVisible(false);
+    box.innerHTML = '<p class="muted">Memuat…</p>';
+    try {
+      const r = await api('/api/history?date=' + date);
       if (!r.rows.length) { box.innerHTML = '<p class="muted">Tidak ada pergerakan pada ' + fmtDateID(date) + '.</p>'; return; }
       let html = '<p>Total masuk: <b>' + fmt(r.totalMasuk) + '</b> • Total keluar: <b>' + fmt(r.totalKeluar) + '</b></p>';
       html += '<div class="list">' + r.rows.map((x) => `
@@ -1589,17 +1739,12 @@ async function loadHistory() {
         </button>`).join('') + '</div>';
       box.innerHTML = html;
       box.querySelectorAll('[data-item]').forEach((b) => b.addEventListener('click', () => openDetail(+b.dataset.item, 'history')));
-    } else {
-      if (!r.rows.length) { box.innerHTML = '<p class="muted">Belum ada pergerakan.</p>'; return; }
-      box.innerHTML = '<div class="list">' + r.rows.map((m) => `
-        <button class="row" data-item="${m.item_id}">
-          <span class="r-stock">${m.kind === 'in' ? '+' : '−'}${fmt(m.qty)}</span>
-          <span class="r-name">${esc(m.item_name)}</span>
-          <div class="r-sub">${esc(m.note || (m.kind === 'in' ? 'Stok masuk' : 'Pengambilan'))} • ${esc(m.machine || '')} ${esc(m.taken_by || '')} • ${fmtDateID(m.date)} ${timeOf(m.created_at)} • Sisa ${fmt(m.balance)}</div>
-        </button>`).join('') + '</div>';
-      box.querySelectorAll('[data-item]').forEach((b) => b.addEventListener('click', () => openDetail(+b.dataset.item, 'history')));
-    }
-  } catch (e) { box.innerHTML = '<p class="error">' + esc(e.message) + '</p>'; }
+    } catch (e) { box.innerHTML = '<p class="error">' + esc(e.message) + '</p>'; }
+    return;
+  }
+  // mode terbaru: semua pergerakan, dimuat bertahap saat scroll ke bawah
+  histInfinite.setVisible(true);
+  histInfinite.reset();
 }
 
 // ---------- impor Excel ----------
@@ -1817,7 +1962,7 @@ async function applyScan(code) {
       const r = await api('/api/items/lookup?code=' + encodeURIComponent(code));
       openDetail(r.item.id, 'inventory');
     } catch (e) {
-      invSearch = code; invPage = 1; $('#inv-search').value = code; showView('inventory'); loadInventory();
+      invSearch = code; $('#inv-search').value = code; showView('inventory'); loadInventory();
       toast('Barang dengan kode ' + code + ' tidak ditemukan.');
     }
   }
